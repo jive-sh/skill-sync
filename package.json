@@ -25,6 +25,7 @@
     "jive:cicd:upload-artifacts": "jive-template cicd upload-artifacts",
     "jive:cicd:deploy": "jive-template cicd deploy",
     "build:local": "bun ../../jive-template-library/src/entrypoints/jive-template.ts cicd build",
+    "install:local": "bun run build:local && bun uninstall --global @jive-sh/skill-sync ; bun add -g \"$(pwd)/dist/base\"",
     "worker:deploy": "wrangler deploy",
     "sync:smoke": "bun scripts/sync-smoke.ts",
     "worker:schema": "wrangler d1 execute jive-skill-sync-db --remote --file worker/schema.sql"

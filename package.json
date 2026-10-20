@@ -1,0 +1,52 @@
+{
+  "$schema": "./package.schema.json",
+  "license": "MIT",
+  "name": "@jive-sh/skill-sync",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Keeps one skills directory identical across every machine you work on.",
+  "peerDependencies": {
+    "effect": "^4.0.0",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250204.0",
+    "@types/bun": "^1.3.14",
+    "effect": "^4.0.0",
+    "jive-template-library": "file:../../jive-template-library/dist/base",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.0.0"
+  },
+  "scripts": {
+    "jive:cicd:get-config": "jive-template cicd get-config",
+    "jive:cicd:build": "jive-template cicd build",
+    "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
+    "jive:cicd:deploy:url": "jive-template cicd deploy-url",
+    "jive:cicd:upload-artifacts": "jive-template cicd upload-artifacts",
+    "jive:cicd:deploy": "jive-template cicd deploy",
+    "build:local": "bun ../../jive-template-library/src/entrypoints/jive-template.ts cicd build",
+    "worker:deploy": "wrangler deploy",
+    "sync:smoke": "bun scripts/sync-smoke.ts",
+    "worker:schema": "wrangler d1 execute jive-skill-sync-db --remote --file worker/schema.sql"
+  },
+  "jive": {
+    "cicd": {
+      "deploy": {
+        "verb": "Publish Tag",
+        "branches": {
+          "main": ["latest"]
+        },
+        "previews": false,
+        "sequentially": true
+      },
+      "runsOnPullRequests": true,
+      "runsOn": "ubuntu-latest"
+    },
+    "library": {
+      "daemons": ["skill-sync-daemon"]
+    }
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  }
+}

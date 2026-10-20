@@ -12,8 +12,13 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "types": ["bun", "@cloudflare/workers-types"]
+    "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "worker/**/*.ts"],
-  "exclude": ["dist", "node_modules"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }

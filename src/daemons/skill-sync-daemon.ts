@@ -1,6 +1,6 @@
 import { watch } from "node:fs";
 import { existsSync } from "node:fs";
-import { exitWhenUninstalled } from "jive-template-library";
+import { exitWhenUninstalled } from "@jive-sh/jive-template-library";
 import { loadConfig, loadState, saveState } from "../internal/config";
 import { notify } from "../internal/notify";
 import { syncOnce } from "../internal/sync";

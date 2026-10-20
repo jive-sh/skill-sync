@@ -22,8 +22,18 @@ export const CONFIG_PATH = join(JIVE_HOME, "skill-sync.json");
 export const TOKEN_PATH = join(homedir(), ".skill-sync-token.json");
 const STATE_PATH = join(JIVE_HOME, "skill-sync-state.json");
 
+/** Managed by Claude's own cloud sync; see `Config.exclude`. */
+const DEFAULT_EXCLUDE = ["synced"] as const;
+
 export interface Config {
   readonly endpoint: string;
+  /**
+   * Top-level directory names under `skillsDir` to leave alone.
+   *
+   * `synced` holds the skills Claude already pulls from the cloud itself. Syncing them here would mean
+   * two systems writing the same files, each undoing the other, and none of them are yours to edit.
+   */
+  readonly exclude: ReadonlyArray<string>;
   readonly token: string;
   readonly skillsDir: string;
   /** Names this machine in conflict messages, so "who overwrote this" has an answer. */
@@ -42,6 +52,19 @@ export interface State {
   known: Record<string, string>;
 }
 
+/**
+ * The settings alone, with no token required.
+ *
+ * `login` needs these precisely when the token is missing, so it cannot go through `loadConfig` — that
+ * reports "not configured" for a missing token and would refuse to run the command that supplies one.
+ */
+export function loadSettings(): { endpoint: string; machine: string; skillsDir: string } | undefined {
+  loadConfig();
+  const settings = readJson<Partial<Config>>(CONFIG_PATH);
+  if (!settings.endpoint || !settings.machine || !settings.skillsDir) return undefined;
+  return { endpoint: settings.endpoint, machine: settings.machine, skillsDir: settings.skillsDir };
+}
+
 /** Reads both files, writing a template for whichever is missing, and says what is still needed. */
 export function loadConfig(): ConfigResult {
   if (!existsSync(CONFIG_PATH)) {
@@ -50,6 +73,7 @@ export function loadConfig(): ConfigResult {
       endpoint: "https://skill-sync.jive.sh",
       skillsDir: detectSkillsDir(),
       machine: machineName(),
+      exclude: DEFAULT_EXCLUDE,
     }, null, 2)}\n`);
   }
 
@@ -68,7 +92,7 @@ export function loadConfig(): ConfigResult {
   if (!token) {
     return { ok: false, reason: `${TOKEN_PATH} needs the sync token` };
   }
-  return { ok: true, config: { ...settings, token } as Config };
+  return { ok: true, config: { exclude: DEFAULT_EXCLUDE, ...settings, token } as Config };
 }
 
 function readJson<T>(path: string): T {
@@ -128,18 +152,19 @@ export const CONFLICT_SUFFIX = ".local";
  * Conflict copies are skipped. They are this machine's evidence of a collision, not content anyone else
  * asked for, and syncing them spreads one machine's mess to every other machine.
  */
-export function listLocalFiles(skillsDir: string): string[] {
+export function listLocalFiles(skillsDir: string, exclude: ReadonlyArray<string> = DEFAULT_EXCLUDE): string[] {
   if (!existsSync(skillsDir)) return [];
 
   const found: string[] = [];
-  const walk = (dir: string): void => {
+  const walk = (dir: string, top: boolean): void => {
     for (const entry of readdirSync(dir)) {
       if (entry.startsWith(".")) continue;
+      if (top && exclude.includes(entry)) continue;
       const full = join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
+      if (statSync(full).isDirectory()) walk(full, false);
       else if (!entry.endsWith(CONFLICT_SUFFIX)) found.push(relative(skillsDir, full).split(sep).join("/"));
     }
   };
-  walk(skillsDir);
+  walk(skillsDir, true);
   return found.sort();
 }

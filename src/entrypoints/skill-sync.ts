@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { Command } from "commander";
-import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadState, saveState } from "../internal/config";
+import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings, loadState, saveState } from "../internal/config";
 import { syncOnce } from "../internal/sync";
 
 /**
@@ -20,12 +20,14 @@ program
   .command("login")
   .description("sign in through Cloudflare and store this machine's sync token")
   .action(async () => {
-    const loaded = loadConfig();
     // A missing token is exactly what we are here to fix, so only the settings have to be usable.
-    const endpoint = loaded.ok ? loaded.config.endpoint : readEndpointOrExit();
-    const machine = loaded.ok ? loaded.config.machine : "unknown";
+    const settings = loadSettings();
+    if (settings === undefined) {
+      console.error(`Fill in ${CONFIG_PATH} with an endpoint, a machine name and a skillsDir first.`);
+      process.exit(1);
+    }
 
-    const token = await captureToken(endpoint, machine);
+    const token = await captureToken(settings.endpoint, settings.machine);
     writeFileSync(TOKEN_PATH, `${JSON.stringify({ token }, null, 2)}\n`, { mode: 0o600 });
     console.log(`Signed in. Token saved to ${TOKEN_PATH}`);
   });
@@ -94,11 +96,6 @@ program
 
 program.parse();
 if (process.argv.length <= 2) program.help();
-
-function readEndpointOrExit(): string {
-  console.error(`Fill in ${CONFIG_PATH} with the endpoint first.`);
-  return process.exit(1);
-}
 
 /**
  * Opens the browser at the service's login endpoint and waits for it to come back with a token.

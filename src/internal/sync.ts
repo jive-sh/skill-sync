@@ -29,7 +29,7 @@ export interface Report {
 
 export async function syncOnce(config: Config, state: State): Promise<Report> {
   const report: Report = { pulled: [], pushed: [], deletedLocally: [], conflicts: [], rejected: [] };
-  const present = new Set(listLocalFiles(config.skillsDir));
+  const present = new Set(listLocalFiles(config.skillsDir, config.exclude));
 
   /**
    * Files deleted here since the last cycle, worked out before anything is fetched.

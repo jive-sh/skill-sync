@@ -46,10 +46,16 @@ export type FolderState = "idle" | "reconciling" | "attention";
  */
 export const skillOf = (path: string): string => path.split("/")[0]!;
 
+/** A file and the SHA-256 of its content — the same hash the server stores, so copies can be compared. */
+export interface FileHash {
+  readonly path: string;
+  readonly hash: string;
+}
+
 /** One skill as a folder holds it. */
 export interface LocalSkill {
   readonly name: string;
-  readonly files: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<FileHash>;
   /** True when this folder has synced it before, which makes it synced by default rather than local. */
   readonly tracked: boolean;
 }
@@ -101,7 +107,7 @@ export interface SkillView {
   readonly synced: boolean;
   /** The folder has a copy on disk. */
   readonly local: boolean;
-  readonly files: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<FileHash>;
 }
 
 export interface FolderView {
@@ -117,7 +123,10 @@ export interface FolderView {
 }
 
 export interface MachineView {
+  /** The name the machine's daemon uses; it identifies the machine and never changes. */
   readonly machine: string;
+  /** What the dashboard calls it: renamed there, or the machine name until then. */
+  readonly name: string;
   /** True while this machine's daemon holds a connection to the hub. */
   readonly online: boolean;
   readonly lastSeen: number | null;
@@ -127,7 +136,7 @@ export interface MachineView {
 /** A skill as the server holds it: the synced version every opted-in folder converges on. */
 export interface SyncedSkill {
   readonly name: string;
-  readonly files: ReadonlyArray<{ readonly path: string; readonly updatedBy: string; readonly updatedAt: number }>;
+  readonly files: ReadonlyArray<FileHash & { readonly updatedBy: string; readonly updatedAt: number }>;
 }
 
 export interface ReconciliationView extends ReconciliationRequest {
@@ -138,6 +147,10 @@ export interface ReconciliationView extends ReconciliationRequest {
 /** Hub → dashboard: the whole picture, resent on every change. It is small, and a diff protocol is not. */
 export interface Snapshot {
   readonly type: "snapshot";
+  /** The deployed service version. A dashboard built by another version reloads itself. */
+  readonly version: string;
+  /** Display name for every machine name that appears anywhere in the snapshot, including old log entries. */
+  readonly names: Readonly<Record<string, string>>;
   readonly skills: ReadonlyArray<SyncedSkill>;
   readonly reconciliations: ReadonlyArray<ReconciliationView>;
   readonly machines: ReadonlyArray<MachineView>;
@@ -146,4 +159,6 @@ export interface Snapshot {
 /** Dashboard → hub. */
 export type DashboardMessage =
   | { readonly type: "setFolder"; readonly machine: string; readonly path: string; readonly enabled: boolean }
-  | { readonly type: "setSkill"; readonly machine: string; readonly folder: string; readonly skill: string; readonly synced: boolean };
+  | { readonly type: "setSkill"; readonly machine: string; readonly folder: string; readonly skill: string; readonly synced: boolean }
+  /** An empty name restores the machine name. */
+  | { readonly type: "renameMachine"; readonly machine: string; readonly name: string };

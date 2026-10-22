@@ -12,8 +12,9 @@ import { basename, delimiter, dirname, join } from "node:path";
  * added and resolves the ones that disagree.
  *
  * Claude runs with no tools, no MCP servers and no settings: it receives the versions on stdin and
- * answers with the merged file, so it cannot touch anything else. It runs under the default Claude login
- * on this machine, the same one `claude` uses in a terminal.
+ * answers with the merged file, so it cannot touch anything else. It runs as the Claude account whose
+ * folder is being merged (`CLAUDE_CONFIG_DIR` set to that folder's home), so it never creates or writes
+ * `~/.claude` — a home the user may have deleted on purpose.
  */
 
 export interface Version {
@@ -88,7 +89,7 @@ export async function reconcile(conflict: Conflict): Promise<Resolution> {
     `=== ${conflict.remote.label}:\n${conflict.remote.content}`,
     "Write the merged file now.",
   ];
-  const answer = await runClaude(sections.join("\n\n-----\n\n"));
+  const answer = await runClaude(sections.join("\n\n-----\n\n"), dirname(conflict.folder));
   const start = answer.indexOf("<merged>");
   const end = answer.lastIndexOf("</merged>");
   if (start === -1 || end <= start) throw new Error("Claude's answer had no <merged> section");
@@ -109,14 +110,14 @@ export async function reconcile(conflict: Conflict): Promise<Resolution> {
   };
 }
 
-function runClaude(input: string): Promise<string> {
+/** `configDir` is the Claude home that owns the folder, e.g. `~/.claude-chaine` for `~/.claude-chaine/skills`. */
+function runClaude(input: string, configDir: string): Promise<string> {
   const claude = findClaude();
   if (claude === undefined) return Promise.reject(new Error("the claude CLI is not installed"));
 
-  // Without CLAUDE_CONFIG_DIR, `claude` uses the machine's default login; an inherited one would point it
-  // at whichever account's folder happened to start this process.
-  const env = { ...process.env };
-  delete env["CLAUDE_CONFIG_DIR"];
+  // Always set, never inherited or left unset: unset, `claude` falls back to `~/.claude` and writes its
+  // session files, backups and caches there, recreating that home every time it is deleted.
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
 
   return new Promise((resolve, reject) => {
     const child = spawn(claude, [

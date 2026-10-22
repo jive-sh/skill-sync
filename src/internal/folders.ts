@@ -1,6 +1,8 @@
-import { detectFolders, listLocalFiles, type Config, type States } from "./config";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { detectFolders, hashBytes, listLocalFiles, type Config, type States } from "./config";
 import {
-  skillOf, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill, type ReconciliationRequest,
+  skillOf, type FileHash, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill, type ReconciliationRequest,
 } from "./wire";
 
 /**
@@ -10,13 +12,22 @@ import {
  * way, or the dashboard would show whichever of them spoke last.
  */
 
-/** The skills on disk in one folder, with the files in each. */
+/**
+ * The skills on disk in one folder, with each file's hash. Hashing every file on each check is cheap at
+ * skills' size, and it is what lets the dashboard show whether this folder's copy is the synced one.
+ */
 export function localSkills(folder: string, config: Config, states: States): LocalSkill[] {
   const known = Object.keys(states[folder]?.known ?? {});
-  const byName = new Map<string, string[]>();
+  const byName = new Map<string, FileHash[]>();
   for (const path of listLocalFiles(folder, config.exclude)) {
     const name = skillOf(path);
-    byName.set(name, [...(byName.get(name) ?? []), path]);
+    let hash: string;
+    try {
+      hash = hashBytes(readFileSync(join(folder, path)));
+    } catch {
+      continue; // Deleted between listing and reading; the next check reports the folder as it is.
+    }
+    byName.set(name, [...(byName.get(name) ?? []), { path, hash }]);
   }
   return [...byName].map(([name, files]) => ({
     name,

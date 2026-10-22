@@ -72,6 +72,15 @@ function applyPrefs(folders: ReadonlyArray<FolderPrefs>): void {
       watchers.delete(folder);
     }
   }
+  // An unticked folder leaves no trace of syncing: its state goes, so the state file lists only folders
+  // that sync, and ticking it again starts it fresh — any copy that differs is merged, not overwritten.
+  // Covers folders with state from an earlier run too, not only ones this run was syncing.
+  const stopped = [...new Set([...prefs.keys(), ...Object.keys(states)])].filter((folder) => !next.has(folder));
+  for (const folder of stopped) {
+    delete states[folder];
+    console.log(`stopped syncing ${folder}`);
+  }
+  if (stopped.length > 0) saveStates(states);
   for (const folder of next.keys()) {
     if (watchers.has(folder)) continue;
     mkdirSync(folder, { recursive: true });

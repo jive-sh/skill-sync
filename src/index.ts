@@ -7,4 +7,9 @@
  */
 
 export { invalidPathReason, isValidPath } from "./internal/path";
-export type { ListFilesResponse, PutFileRequest, RemoteFile } from "./internal/wire";
+export { skillOf } from "./internal/wire";
+export type {
+  DaemonMessage, DashboardMessage, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
+  HubToDaemon, ListFilesResponse, LocalSkill, MachineView, PutFileRequest, ReconciliationRequest,
+  ReconciliationView, RemoteFile, SkillView, Snapshot, SyncedSkill,
+} from "./internal/wire";

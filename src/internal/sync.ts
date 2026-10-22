@@ -1,7 +1,9 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFLICT_SUFFIX, hashBytes, listLocalFiles, type Config, type State } from "./config";
 import { invalidPathReason } from "./path";
+import { backUp, type Conflict, type Resolution } from "./reconcile";
+import { skillOf, type ReconciliationRequest } from "./wire";
 
 /**
  * One sync cycle: take everything the server has that we do not, then offer everything we have that it
@@ -15,7 +17,18 @@ interface RemoteFile {
   readonly path: string;
   readonly hash: string | null;
   readonly deleted: boolean;
+  readonly updatedAt: number;
   readonly updatedBy: string;
+}
+
+/**
+ * How a cycle resolves a file changed both here and on the server. Without a `merge`, the server's copy
+ * wins and this machine's is kept beside it as `.local`; with one, the two are merged and the result
+ * is pushed. `onMerging` fires before a merge starts, since one can take minutes.
+ */
+export interface Reconciler {
+  readonly merge: (conflict: Conflict) => Promise<Resolution>;
+  readonly onMerging?: (path: string) => void;
 }
 
 export interface Report {
@@ -23,13 +36,48 @@ export interface Report {
   readonly pushed: string[];
   readonly deletedLocally: string[];
   readonly conflicts: string[];
+  /** Paths changed on both sides and merged; the merge is pushed in the same cycle. */
+  readonly merged: string[];
+  /** Merges that failed, with the reason; those paths fell back to `.local`. */
+  readonly mergeFailures: string[];
+  /** Every merge attempted this cycle, for the audit log. */
+  readonly reconciliations: Omit<ReconciliationRequest, "folder">[];
   /** Paths the server offered that this machine refused to write. */
   readonly rejected: string[];
+  /** A push lost a race to another machine; the next cycle pulls and reconciles it. */
+  retry: boolean;
 }
 
-export async function syncOnce(config: Config, state: State): Promise<Report> {
-  const report: Report = { pulled: [], pushed: [], deletedLocally: [], conflicts: [], rejected: [] };
-  const present = new Set(listLocalFiles(config.skillsDir, config.exclude));
+/** True when a report has nothing in it worth telling anyone. */
+export function isQuiet(report: Report): boolean {
+  return [report.pulled, report.pushed, report.deletedLocally, report.conflicts, report.merged,
+    report.mergeFailures, report.rejected].every((list) => list.length === 0);
+}
+
+/**
+ * `skills` are the skills this folder has opted into. Everything else in the folder is local to it: never
+ * pushed, never overwritten, never deleted by a sync.
+ */
+export async function syncOnce(
+  config: Config, folder: string, state: State, skills: ReadonlySet<string>, reconciler?: Reconciler,
+): Promise<Report> {
+  const report: Report = {
+    pulled: [], pushed: [], deletedLocally: [], conflicts: [], merged: [], mergeFailures: [], reconciliations: [],
+    rejected: [], retry: false,
+  };
+  mkdirSync(folder, { recursive: true });
+
+  // A skill opted in since last cycle may have server files older than the cursor; re-read from the start.
+  if ([...skills].some((skill) => !(state.skills ?? []).includes(skill))) state.cursor = 0;
+  state.skills = [...skills].sort();
+  // A skill opted out stops being tracked here. Left in `known`, its files would look deleted from this
+  // folder and the push would tombstone them on every machine.
+  for (const path of Object.keys(state.known)) {
+    if (!skills.has(skillOf(path))) delete state.known[path];
+  }
+
+  const present = new Set(listLocalFiles(folder, config.exclude).filter((path) => skills.has(skillOf(path))));
+  const ctx: Cycle = { config, folder, state, report, reconciler, skills };
 
   /**
    * Files deleted here since the last cycle, worked out before anything is fetched.
@@ -43,14 +91,22 @@ export async function syncOnce(config: Config, state: State): Promise<Report> {
 
   // `present` is passed through both passes and kept current: the pull removes tombstoned files and adds
   // new ones, and a push that read a stale snapshot would try to open a file the pull had just deleted.
-  await pull(config, state, report, pendingDeletes, present);
-  await push(config, state, report, present);
+  await pull(ctx, pendingDeletes, present);
+  await push(ctx, present);
   return report;
 }
 
-async function pull(
-  config: Config, state: State, report: Report, pendingDeletes: Set<string>, present: Set<string>,
-): Promise<void> {
+interface Cycle {
+  readonly config: Config;
+  readonly folder: string;
+  readonly state: State;
+  readonly report: Report;
+  readonly reconciler: Reconciler | undefined;
+  readonly skills: ReadonlySet<string>;
+}
+
+async function pull(ctx: Cycle, pendingDeletes: Set<string>, present: Set<string>): Promise<void> {
+  const { config, folder, state, report } = ctx;
   const response = await call(config, `/files?since=${state.cursor}`);
   const body = await response.json() as { cursor: number; files: RemoteFile[] };
 
@@ -62,7 +118,9 @@ async function pull(
       report.rejected.push(`${file.path} (${badPath})`);
       continue;
     }
-    const local = join(config.skillsDir, file.path);
+    // Local to this folder: the server's version is not wanted here.
+    if (!ctx.skills.has(skillOf(file.path))) continue;
+    const local = join(folder, file.path);
     // Deleted here and not yet reported; the push pass owns this path for the rest of the cycle.
     if (pendingDeletes.has(file.path)) continue;
 
@@ -91,14 +149,21 @@ async function pull(
       continue;
     }
 
-    // A local edit we have not pushed yet would be destroyed by overwriting. Keep it beside the incoming
-    // copy and let the push pass raise the conflict rather than deciding which one wins here.
+    const content = new Uint8Array(await (await call(config, `/content/${file.hash}`)).arrayBuffer());
+
+    // Changed here and on the server. Merge the two when possible: the merge is written here, recorded as
+    // based on the server's copy, and so goes out in this cycle's push.
     if (localHash !== undefined && localHash !== state.known[file.path]) {
+      if (await mergeInto(ctx, file, local, content)) {
+        present.add(file.path);
+        continue;
+      }
+      // No merge: a local edit we have not pushed yet would be destroyed by overwriting, so it is kept
+      // beside the incoming copy.
       writeFileSync(`${local}${CONFLICT_SUFFIX}`, readFileSync(local));
       report.conflicts.push(file.path);
     }
 
-    const content = new Uint8Array(await (await call(config, `/content/${file.hash}`)).arrayBuffer());
     mkdirSync(dirname(local), { recursive: true });
     writeFileSync(local, content);
     state.known[file.path] = file.hash!;
@@ -109,9 +174,82 @@ async function pull(
   state.cursor = body.cursor;
 }
 
-async function push(config: Config, state: State, report: Report, present: Set<string>): Promise<void> {
+/**
+ * Merges this machine's copy with the server's and writes the result over the local file. False when
+ * there is no merger, either side is not text, or the merge failed — the caller then keeps `.local`.
+ */
+async function mergeInto(ctx: Cycle, file: RemoteFile, local: string, remote: Uint8Array): Promise<boolean> {
+  const { config, folder, state, report, reconciler } = ctx;
+  if (reconciler === undefined) return false;
+
+  const mine = readFileSync(local);
+  const localText = asText(mine);
+  const remoteText = asText(remote);
+  if (localText === undefined || remoteText === undefined) return false;
+
+  const known = state.known[file.path];
+  const base = known === undefined ? null : await fetchText(config, known);
+  const conflict: Conflict = {
+    folder,
+    path: file.path,
+    local: {
+      content: localText,
+      label: `the copy in ${folder} on ${config.machine}, last edited ${statSync(local).mtime.toISOString()}`,
+    },
+    remote: {
+      content: remoteText,
+      label: `the synced copy, last uploaded by ${file.updatedBy} at ${new Date(file.updatedAt).toISOString()}`,
+    },
+    base,
+  };
+
+  backUp(conflict);
+  reconciler.onMerging?.(file.path);
+  let resolution: Resolution;
+  try {
+    resolution = await reconciler.merge(conflict);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    report.mergeFailures.push(`${file.path}: ${reason}`);
+    report.reconciliations.push({
+      path: file.path, outcome: "failed",
+      conflict: "This machine's copy and the server's differ.",
+      resolution: `Not merged: ${reason}. The server's version was kept and this machine's saved as ${file.path}${CONFLICT_SUFFIX}.`,
+    });
+    return false;
+  }
+  writeFileSync(local, resolution.merged);
+  state.known[file.path] = file.hash!;
+  report.merged.push(file.path);
+  report.reconciliations.push({
+    path: file.path, outcome: "merged", conflict: resolution.conflict, resolution: resolution.resolution,
+  });
+  return true;
+}
+
+/** Text only: a merge by a language model is meaningless for an image or a binary, and harmful. */
+function asText(bytes: Uint8Array): string | undefined {
+  if (bytes.length > 512 * 1024 || bytes.includes(0)) return undefined;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The base is a nicety for the merge; if the server no longer has it, merge without one. */
+async function fetchText(config: Config, hash: string): Promise<string | null> {
+  try {
+    return asText(new Uint8Array(await (await call(config, `/content/${hash}`)).arrayBuffer())) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function push(ctx: Cycle, present: Set<string>): Promise<void> {
+  const { config, folder, state, report } = ctx;
   for (const path of present) {
-    const bytes = readFileSync(join(config.skillsDir, path));
+    const bytes = readFileSync(join(folder, path));
     const hash = hashBytes(bytes);
     if (state.known[path] === hash) continue;
 
@@ -125,7 +263,8 @@ async function push(config: Config, state: State, report: Report, present: Set<s
       state.known[path] = hash;
       report.pushed.push(path);
     } else {
-      report.conflicts.push(path);
+      // Another machine wrote first. Not a conflict yet: the next cycle pulls its version and merges.
+      report.retry = true;
     }
   }
 

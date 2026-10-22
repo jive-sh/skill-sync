@@ -1,9 +1,11 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { Command } from "commander";
-import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings, loadState, saveState } from "../internal/config";
-import { syncOnce } from "../internal/sync";
+import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings, loadStates, saveStates, stateFor } from "../internal/config";
+import { describe, localSkills, logReconciliations, register } from "../internal/folders";
+import { reconcile } from "../internal/reconcile";
+import { isQuiet, syncOnce } from "../internal/sync";
 
 /**
  * The CLI that accompanies the daemon.
@@ -23,13 +25,14 @@ program
     // A missing token is exactly what we are here to fix, so only the settings have to be usable.
     const settings = loadSettings();
     if (settings === undefined) {
-      console.error(`Fill in ${CONFIG_PATH} with an endpoint, a machine name and a skillsDir first.`);
+      console.error(`Fill in ${CONFIG_PATH} with an endpoint and a machine name first.`);
       process.exit(1);
     }
 
     const token = await captureToken(settings.endpoint, settings.machine);
     writeFileSync(TOKEN_PATH, `${JSON.stringify({ token }, null, 2)}\n`, { mode: 0o600 });
     console.log(`Signed in. Token saved to ${TOKEN_PATH}`);
+    console.log(`Choose which folders sync at ${settings.endpoint}/`);
   });
 
 program
@@ -59,19 +62,28 @@ program
       console.log(`Not ready: ${loaded.reason}`);
       return;
     }
-    const { endpoint, skillsDir, machine } = loaded.config;
+    const { endpoint, machine } = loaded.config;
     console.log(`machine     ${machine}`);
-    console.log(`skills      ${skillsDir}${existsSync(skillsDir) ? "" : "  (does not exist)"}`);
     console.log(`endpoint    ${endpoint}`);
     console.log(`settings    ${CONFIG_PATH}`);
-    console.log(`cursor      ${loadState().cursor}`);
+    console.log(`dashboard   ${endpoint}/`);
 
-    const response = await fetch(`${endpoint}/files?since=0`, {
-      headers: { authorization: `Bearer ${loaded.config.token}` },
-    });
-    console.log(response.ok
-      ? `server      reachable, ${((await response.json()) as { files: unknown[] }).files.length} file(s)`
-      : `server      ${response.status} ${response.statusText} — try \`skill-sync login\``);
+    try {
+      const states = loadStates();
+      const request = describe(loaded.config, states);
+      const prefs = new Map((await register(loaded.config, request)).map((folder) => [folder.path, new Set(folder.skills)]));
+      for (const { path } of request.folders) {
+        const synced = prefs.get(path);
+        console.log(`${synced ? "syncing " : "skipped "}   ${path}`);
+        if (synced === undefined) continue;
+        const local = localSkills(path, loaded.config, states).map((skill) => skill.name);
+        for (const skill of [...new Set([...local, ...synced])].sort()) {
+          console.log(`              ${synced.has(skill) ? "synced" : "local "}  ${skill}`);
+        }
+      }
+    } catch (cause) {
+      console.log(`server      ${cause instanceof Error ? cause.message : String(cause)} — try \`skill-sync login\``);
+    }
   });
 
 program
@@ -83,15 +95,24 @@ program
       console.error(`Not ready: ${loaded.reason}`);
       process.exit(1);
     }
-    const state = loadState();
-    const report = await syncOnce(loaded.config, state);
-    saveState(state);
-    for (const path of report.pulled) console.log(`pulled  ${path}`);
-    for (const path of report.pushed) console.log(`pushed  ${path}`);
-    for (const path of report.deletedLocally) console.log(`deleted ${path}`);
-    for (const path of report.conflicts) console.log(`CONFLICT ${path} — your copy is at ${path}.local`);
-    for (const path of report.rejected) console.log(`REJECTED ${path}`);
-    if (Object.values(report).every((list) => list.length === 0)) console.log("already in sync");
+    const states = loadStates();
+    for (const { path: folder, skills } of await register(loaded.config, describe(loaded.config, states))) {
+      const report = await syncOnce(loaded.config, folder, stateFor(states, folder), new Set(skills), {
+        merge: reconcile,
+        onMerging: (path) => console.log(`merging ${path} with Claude…`),
+      });
+      saveStates(states);
+      await logReconciliations(loaded.config, report.reconciliations.map((entry) => ({ ...entry, folder })));
+      console.log(folder);
+      for (const path of report.pulled) console.log(`  pulled  ${path}`);
+      for (const path of report.pushed) console.log(`  pushed  ${path}`);
+      for (const path of report.deletedLocally) console.log(`  deleted ${path}`);
+      for (const path of report.merged) console.log(`  merged  ${path}`);
+      for (const failure of report.mergeFailures) console.log(`  MERGE FAILED ${failure}`);
+      for (const path of report.conflicts) console.log(`  CONFLICT ${path} — your copy is at ${path}.local`);
+      for (const path of report.rejected) console.log(`  REJECTED ${path}`);
+      if (isQuiet(report)) console.log("  already in sync");
+    }
   });
 
 program.parse();

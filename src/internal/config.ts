@@ -6,16 +6,17 @@ import { join, relative, sep } from "node:path";
 /**
  * Per-machine settings and sync state, both under `~/.jive/`.
  *
- * A file rather than environment variables: which directory holds this machine's skills, and which
- * machine this is, differ per computer and have to survive a login, which is exactly what a config file
- * is for and exactly what an environment variable is not.
+ * A file rather than environment variables: the endpoint and which machine this is differ per computer
+ * and have to survive a login, which is exactly what a config file is for and exactly what an environment
+ * variable is not. Which folders to sync is not in here: they are detected, and the choice to leave one
+ * out is kept on the server so the dashboard can change it and a reinstalled daemon still remembers it.
  */
 
 const JIVE_HOME = join(homedir(), ".jive");
 export const CONFIG_PATH = join(JIVE_HOME, "skill-sync.json");
 /**
  * The token lives on its own, outside `~/.jive/`, because it is the one part that must not travel with
- * the rest. Endpoint, machine name and skills directory are settings you could paste into a gist; this
+ * the rest. Endpoint and machine name are settings you could paste into a gist; this
  * is a credential, and keeping it in a separate file makes "do not copy this one" a property of the
  * filesystem rather than a thing you have to remember.
  */
@@ -28,14 +29,13 @@ const DEFAULT_EXCLUDE = ["synced"] as const;
 export interface Config {
   readonly endpoint: string;
   /**
-   * Top-level directory names under `skillsDir` to leave alone.
+   * Top-level directory names under each synced folder to leave alone.
    *
    * `synced` holds the skills Claude already pulls from the cloud itself. Syncing them here would mean
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
    */
   readonly exclude: ReadonlyArray<string>;
   readonly token: string;
-  readonly skillsDir: string;
   /** Names this machine in conflict messages, so "who overwrote this" has an answer. */
   readonly machine: string;
 }
@@ -45,12 +45,18 @@ export type ConfigResult =
   | { readonly ok: true; readonly config: Config }
   | { readonly ok: false; readonly reason: string };
 
+/** Sync progress for one folder. Each folder syncs with the server on its own, so each has its own. */
 export interface State {
   /** Highest server sequence number already applied. */
   cursor: number;
   /** Last hash this machine agreed with the server on, per relative path. Absent means never synced. */
   known: Record<string, string>;
+  /** The skills this folder synced last cycle, to notice one being opted in. */
+  skills?: string[];
 }
+
+/** Every folder's `State`, keyed by the folder's absolute path. */
+export type States = Record<string, State>;
 
 /**
  * The settings alone, with no token required.
@@ -58,11 +64,11 @@ export interface State {
  * `login` needs these precisely when the token is missing, so it cannot go through `loadConfig` — that
  * reports "not configured" for a missing token and would refuse to run the command that supplies one.
  */
-export function loadSettings(): { endpoint: string; machine: string; skillsDir: string } | undefined {
+export function loadSettings(): { endpoint: string; machine: string } | undefined {
   loadConfig();
   const settings = readJson<Partial<Config>>(CONFIG_PATH);
-  if (!settings.endpoint || !settings.machine || !settings.skillsDir) return undefined;
-  return { endpoint: settings.endpoint, machine: settings.machine, skillsDir: settings.skillsDir };
+  if (!settings.endpoint || !settings.machine) return undefined;
+  return { endpoint: settings.endpoint, machine: settings.machine };
 }
 
 /** Reads both files, writing a template for whichever is missing, and says what is still needed. */
@@ -71,7 +77,6 @@ export function loadConfig(): ConfigResult {
     mkdirSync(JIVE_HOME, { recursive: true });
     writeFileSync(CONFIG_PATH, `${JSON.stringify({
       endpoint: "https://skill-sync.jive.sh",
-      skillsDir: detectSkillsDir(),
       machine: machineName(),
       exclude: DEFAULT_EXCLUDE,
     }, null, 2)}\n`);
@@ -86,13 +91,16 @@ export function loadConfig(): ConfigResult {
   const settings = readJson<Partial<Config>>(CONFIG_PATH);
   const token = readJson<{ token?: string }>(TOKEN_PATH).token;
 
-  if (!settings.endpoint || !settings.skillsDir || !settings.machine) {
-    return { ok: false, reason: `${CONFIG_PATH} needs an endpoint, a skillsDir and a machine name` };
+  if (!settings.endpoint || !settings.machine) {
+    return { ok: false, reason: `${CONFIG_PATH} needs an endpoint and a machine name` };
   }
   if (!token) {
     return { ok: false, reason: `${TOKEN_PATH} needs the sync token` };
   }
-  return { ok: true, config: { exclude: DEFAULT_EXCLUDE, ...settings, token } as Config };
+  return {
+    ok: true,
+    config: { endpoint: settings.endpoint, machine: settings.machine, exclude: settings.exclude ?? DEFAULT_EXCLUDE, token },
+  };
 }
 
 function readJson<T>(path: string): T {
@@ -103,17 +111,31 @@ function readJson<T>(path: string): T {
   }
 }
 
-export function loadState(): State {
-  try {
-    return JSON.parse(readFileSync(STATE_PATH, "utf-8")) as State;
-  } catch {
-    return { cursor: 0, known: {} };
+/**
+ * Every folder's sync state.
+ *
+ * Before folders were detected the file held one folder's `{ cursor, known }`, for the folder then named
+ * by `skillsDir` in the settings. That state is carried over to that folder: dropping it would make the
+ * folder look never-synced, and every file in it that differs from the server would become a conflict.
+ */
+export function loadStates(): States {
+  const stored = readJson<Partial<State> & { folders?: States }>(STATE_PATH);
+  if (stored.folders !== undefined) return stored.folders;
+  const legacyFolder = readJson<{ skillsDir?: string }>(CONFIG_PATH).skillsDir;
+  if (legacyFolder !== undefined && stored.cursor !== undefined && stored.known !== undefined) {
+    return { [legacyFolder]: { cursor: stored.cursor, known: stored.known } };
   }
+  return {};
 }
 
-export function saveState(state: State): void {
+export function stateFor(states: States, folder: string): State {
+  states[folder] ??= { cursor: 0, known: {} };
+  return states[folder];
+}
+
+export function saveStates(states: States): void {
   mkdirSync(JIVE_HOME, { recursive: true });
-  writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
+  writeFileSync(STATE_PATH, `${JSON.stringify({ folders: states }, null, 2)}\n`);
 }
 
 /** `HOSTNAME` is not set on macOS, so the template was writing "unknown" on exactly this machine. */
@@ -122,19 +144,18 @@ function machineName(): string {
 }
 
 /**
- * The skills directory this machine actually has, rather than the one it ought to have.
+ * The `skills` folder of every Claude home on this machine: `~/.claude` and each `~/.claude-<name>`.
  *
- * Claude's home is not always `~/.claude` — an account with a suffixed home (`~/.claude-alex`) keeps its
- * skills there, and writing the conventional path into the template just hands the user a wrong value to
- * notice and correct. Pick the one that exists; fall back to the conventional path only if none does.
+ * Every home is a candidate, whether or not it has a `skills` folder yet, so a Claude account added
+ * later joins without anyone listing it. Which of them actually sync is the user's choice on the
+ * dashboard; a folder that is synced and missing is created.
  */
-function detectSkillsDir(): string {
-  const candidates = readdirSync(homedir())
+export function detectFolders(): string[] {
+  return readdirSync(homedir())
     .filter((entry) => entry === ".claude" || entry.startsWith(".claude-"))
+    .filter((entry) => statSync(join(homedir(), entry)).isDirectory())
     .map((entry) => join(homedir(), entry, "skills"))
-    .filter((dir) => existsSync(dir))
     .sort();
-  return candidates[0] ?? join(homedir(), ".claude", "skills");
 }
 
 export function hashBytes(bytes: Uint8Array): string {
@@ -145,15 +166,15 @@ export function hashBytes(bytes: Uint8Array): string {
 export const CONFLICT_SUFFIX = ".local";
 
 /**
- * Every file under the skills directory, as paths relative to it with forward slashes.
+ * Every file under a synced folder, as paths relative to it with forward slashes.
  *
  * Normalised because the same skill synced from Windows and macOS must be one row, not two.
  *
  * Conflict copies are skipped. They are this machine's evidence of a collision, not content anyone else
  * asked for, and syncing them spreads one machine's mess to every other machine.
  */
-export function listLocalFiles(skillsDir: string, exclude: ReadonlyArray<string> = DEFAULT_EXCLUDE): string[] {
-  if (!existsSync(skillsDir)) return [];
+export function listLocalFiles(folder: string, exclude: ReadonlyArray<string> = DEFAULT_EXCLUDE): string[] {
+  if (!existsSync(folder)) return [];
 
   const found: string[] = [];
   const walk = (dir: string, top: boolean): void => {
@@ -162,9 +183,9 @@ export function listLocalFiles(skillsDir: string, exclude: ReadonlyArray<string>
       if (top && exclude.includes(entry)) continue;
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) walk(full, false);
-      else if (!entry.endsWith(CONFLICT_SUFFIX)) found.push(relative(skillsDir, full).split(sep).join("/"));
+      else if (!entry.endsWith(CONFLICT_SUFFIX)) found.push(relative(folder, full).split(sep).join("/"));
     }
   };
-  walk(skillsDir, true);
+  walk(folder, true);
   return found.sort();
 }

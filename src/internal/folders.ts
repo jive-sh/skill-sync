@@ -1,0 +1,58 @@
+import { detectFolders, listLocalFiles, type Config, type States } from "./config";
+import {
+  skillOf, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill, type ReconciliationRequest,
+} from "./wire";
+
+/**
+ * What this machine tells the service about its folders, and what it hears back.
+ *
+ * The daemon and the CLI both register, so this lives in one place: they must describe a folder the same
+ * way, or the dashboard would show whichever of them spoke last.
+ */
+
+/** The skills on disk in one folder, with the files in each. */
+export function localSkills(folder: string, config: Config, states: States): LocalSkill[] {
+  const known = Object.keys(states[folder]?.known ?? {});
+  const byName = new Map<string, string[]>();
+  for (const path of listLocalFiles(folder, config.exclude)) {
+    const name = skillOf(path);
+    byName.set(name, [...(byName.get(name) ?? []), path]);
+  }
+  return [...byName].map(([name, files]) => ({
+    name,
+    files,
+    tracked: known.some((path) => skillOf(path) === name),
+  }));
+}
+
+/** Everything registration sends, so a caller can tell when it has changed and is worth re-sending. */
+export function describe(config: Config, states: States): FoldersRequest {
+  return { folders: detectFolders().map((path) => ({ path, skills: localSkills(path, config, states) })) };
+}
+
+/** Registers this machine's folders and skills; returns the folders to sync and the skills in each. */
+export async function register(config: Config, request: FoldersRequest): Promise<ReadonlyArray<FolderPrefs>> {
+  const response = await fetch(`${config.endpoint}/folders`, {
+    method: "POST",
+    headers: authHeaders(config, { "content-type": "application/json" }),
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new Error(`POST /folders: ${response.status} ${await response.text()}`);
+  return (await response.json() as FoldersResponse).folders;
+}
+
+/** Sends merges to the audit log. A failure here is logged by the caller, never fatal to a sync. */
+export async function logReconciliations(config: Config, entries: ReadonlyArray<ReconciliationRequest>): Promise<void> {
+  for (const entry of entries) {
+    const response = await fetch(`${config.endpoint}/reconciliations`, {
+      method: "POST",
+      headers: authHeaders(config, { "content-type": "application/json" }),
+      body: JSON.stringify(entry),
+    });
+    if (!response.ok) throw new Error(`POST /reconciliations: ${response.status} ${await response.text()}`);
+  }
+}
+
+export function authHeaders(config: Config, extra: Record<string, string>): Record<string, string> {
+  return { authorization: `Bearer ${config.token}`, "x-skill-sync-machine": config.machine, ...extra };
+}

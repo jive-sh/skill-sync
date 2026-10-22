@@ -2,7 +2,7 @@
   "$schema": "./package.schema.json",
   "license": "MIT",
   "name": "@jive-sh/skill-sync",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Keeps one skills directory identical across every machine you work on.",
   "peerDependencies": {

@@ -18,7 +18,7 @@ const program = new Command("skill-sync")
 
 program
   .command("login")
-  .description("sign in through Cloudflare and store this machine's sync token")
+  .description("verify with your passkey in the browser and store this machine's sync token")
   .action(async () => {
     // A missing token is exactly what we are here to fix, so only the settings have to be usable.
     const settings = loadSettings();
@@ -100,9 +100,10 @@ if (process.argv.length <= 2) program.help();
 /**
  * Opens the browser at the service's login endpoint and waits for it to come back with a token.
  *
- * Cloudflare Access does the authenticating; this only has to be listening when it finishes. The
- * listener is bound to 127.0.0.1 so nothing off this machine can receive the redirect, and the port is
- * whatever the OS hands out so two machines — or two attempts — never contend for one.
+ * The browser does the authenticating, with a passkey for the service's domain; this only has to be
+ * listening when it finishes. The listener is bound to 127.0.0.1 so nothing off this machine can receive
+ * the redirect, and the port is whatever the OS hands out so two machines — or two attempts — never
+ * contend for one.
  */
 async function captureToken(endpoint: string, machine: string): Promise<string> {
   return await new Promise<string>((resolve, reject) => {

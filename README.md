@@ -3,10 +3,12 @@
 Keeps one skills directory identical across every machine you work on.
 
 A daemon watches the directory and syncs it through a Cloudflare Worker: file index in D1, contents in
-R2 addressed by hash. A CLI signs you in through Cloudflare Access and stores a per-machine token.
+R2 addressed by hash. `skill-sync login` opens `skill-sync.jive.sh` in your browser, where you verify
+with your passkey (from any passkey manager, such as Google Password Manager); the service then hands the
+CLI a per-machine token. The CLI never handles the passkey.
 
 ```
-skill-sync login     sign in through Cloudflare and store this machine's token
+skill-sync login     verify with your passkey in the browser and store this machine's token
 skill-sync status    what this machine syncs, and whether it can reach the service
 skill-sync sync      run one cycle now
 skill-sync logout    revoke this machine's token

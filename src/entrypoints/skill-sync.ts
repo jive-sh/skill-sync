@@ -2,10 +2,10 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { Command } from "commander";
-import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings, loadStates, saveStates, stateFor } from "../internal/config";
-import { describe, localSkills, logReconciliations, register } from "../internal/folders";
-import { reconcile } from "../internal/reconcile";
-import { isQuiet, syncOnce } from "../internal/sync";
+import { Effect } from "effect";
+import { upgrade } from "jive-abstract-library";
+import { name } from "../../package.json";
+import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings } from "../internal/config";
 
 /**
  * The CLI that accompanies the daemon.
@@ -16,7 +16,7 @@ import { isQuiet, syncOnce } from "../internal/sync";
  */
 
 const program = new Command("skill-sync")
-  .description("keep one skills directory identical across every machine you work on");
+  .description("keep the skills you choose identical across every Claude folder on every machine; choose them at https://skill-sync.jive.sh/");
 
 program
   .command("login")
@@ -54,65 +54,13 @@ program
   });
 
 program
-  .command("status")
-  .description("show what this machine is configured to sync, and whether it can")
+  .command("upgrade")
+  .description("upgrade skill-sync to the latest version with the package manager that installed it")
   .action(async () => {
-    const loaded = loadConfig();
-    if (!loaded.ok) {
-      console.log(`Not ready: ${loaded.reason}`);
-      return;
-    }
-    const { endpoint, machine } = loaded.config;
-    console.log(`machine     ${machine}`);
-    console.log(`endpoint    ${endpoint}`);
-    console.log(`settings    ${CONFIG_PATH}`);
-    console.log(`dashboard   ${endpoint}/`);
-
-    try {
-      const states = loadStates();
-      const request = describe(loaded.config, states);
-      const prefs = new Map((await register(loaded.config, request)).map((folder) => [folder.path, new Set(folder.skills)]));
-      for (const { path } of request.folders) {
-        const synced = prefs.get(path);
-        console.log(`${synced ? "syncing " : "skipped "}   ${path}`);
-        if (synced === undefined) continue;
-        const local = localSkills(path, loaded.config, states).map((skill) => skill.name);
-        for (const skill of [...new Set([...local, ...synced])].sort()) {
-          console.log(`              ${synced.has(skill) ? "synced" : "local "}  ${skill}`);
-        }
-      }
-    } catch (cause) {
-      console.log(`server      ${cause instanceof Error ? cause.message : String(cause)} — try \`skill-sync login\``);
-    }
-  });
-
-program
-  .command("sync")
-  .description("run one sync cycle now instead of waiting for the daemon")
-  .action(async () => {
-    const loaded = loadConfig();
-    if (!loaded.ok) {
-      console.error(`Not ready: ${loaded.reason}`);
+    await Effect.runPromise(upgrade({ packageName: name })).catch((cause: unknown) => {
+      console.error(`Upgrade failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       process.exit(1);
-    }
-    const states = loadStates();
-    for (const { path: folder, skills } of await register(loaded.config, describe(loaded.config, states))) {
-      const report = await syncOnce(loaded.config, folder, stateFor(states, folder), new Set(skills), {
-        merge: reconcile,
-        onMerging: (path) => console.log(`merging ${path} with Claude…`),
-      });
-      saveStates(states);
-      await logReconciliations(loaded.config, report.reconciliations.map((entry) => ({ ...entry, folder })));
-      console.log(folder);
-      for (const path of report.pulled) console.log(`  pulled  ${path}`);
-      for (const path of report.pushed) console.log(`  pushed  ${path}`);
-      for (const path of report.deletedLocally) console.log(`  deleted ${path}`);
-      for (const path of report.merged) console.log(`  merged  ${path}`);
-      for (const failure of report.mergeFailures) console.log(`  MERGE FAILED ${failure}`);
-      for (const path of report.conflicts) console.log(`  CONFLICT ${path} — your copy is at ${path}.local`);
-      for (const path of report.rejected) console.log(`  REJECTED ${path}`);
-      if (isQuiet(report)) console.log("  already in sync");
-    }
+    });
   });
 
 program.parse();

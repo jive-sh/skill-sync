@@ -113,8 +113,6 @@ export interface SkillView {
 export interface FolderView {
   readonly path: string;
   readonly enabled: boolean;
-  /** False once the machine stops finding the folder; the row stays so its preference is remembered. */
-  readonly present: boolean;
   readonly state: FolderState;
   readonly detail: string | null;
   readonly lastActivityAt: number | null;

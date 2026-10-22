@@ -10,10 +10,12 @@ token and opens the dashboard. The CLI never handles the passkey.
 
 ```
 skill-sync login     verify with your passkey in the browser and store this machine's token
-skill-sync status    which folders and skills this machine syncs, and which stay local
-skill-sync sync      run one cycle now
 skill-sync logout    revoke this machine's token
+skill-sync upgrade   upgrade with the package manager that installed it
 ```
+
+Everything else — which folders and skills sync, renaming computers, the merge log — is on the
+dashboard.
 
 The daemon registers itself to start at login when the package is installed.
 
@@ -24,8 +26,11 @@ The daemon registers itself to start at login when the package is installed.
 - **Synced skills**: the shared version of every skill that syncs, and who changed it last.
 - **Reconciliation log**: every merge Claude made — which computer, which folder and file, what
   conflicted and how it was resolved — so you can audit them.
-- **Computers**: each machine, whether its daemon is running, its Claude folders, and the skills in each
-  with their files.
+- **Computers**: each machine (renameable), whether its daemon is running, its Claude folders, and the
+  skills in each with their files.
+
+Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
+one. The page reloads itself when a new version of the service is deployed.
 
 Each folder and each skill has a checkbox. An unchecked folder does not sync at all; an unchecked skill
 stays local to its folder — never sent, never overwritten. Choices are stored on the server, so they apply

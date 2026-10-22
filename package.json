@@ -13,16 +13,16 @@
     "@types/bun": "^1.3.14",
     "effect": "^4.0.0",
     "typescript": "^5.9.3",
-    "@jive-sh/jive-template-library": "file:../../jive-template-library/dist/base"
+    "jive-abstract-library": "0.1.2"
   },
   "scripts": {
-    "jive:cicd:get-config": "jive-template cicd get-config",
-    "jive:cicd:build": "jive-template cicd build",
+    "jive:cicd:get-config": "jive-library cicd get-config",
+    "jive:cicd:build": "jive-library cicd build",
     "jive:cicd:audit": "tsc --noEmit -p tsconfig.json",
-    "jive:cicd:deploy:url": "jive-template cicd deploy-url",
-    "jive:cicd:upload-artifacts": "jive-template cicd upload-artifacts",
-    "jive:cicd:deploy": "jive-template cicd deploy",
-    "build:local": "bun ../../jive-template-library/src/entrypoints/jive-template.ts cicd build",
+    "jive:cicd:deploy:url": "jive-library cicd deploy-url",
+    "jive:cicd:upload-artifacts": "jive-library cicd upload-artifacts",
+    "jive:cicd:deploy": "jive-library cicd deploy",
+    "build:local": "bun ../../jive-abstract-library/src/entrypoints/jive-library.ts cicd build",
     "install:local": "bun run build:local && bun uninstall --global @jive-sh/skill-sync ; bun add -g \"$(pwd)/dist/base\""
   },
   "jive": {

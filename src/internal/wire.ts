@@ -56,13 +56,12 @@ export interface FileHash {
 export interface LocalSkill {
   readonly name: string;
   readonly files: ReadonlyArray<FileHash>;
-  /** True when this folder has synced it before, which makes it synced by default rather than local. */
-  readonly tracked: boolean;
 }
 
 /**
- * `POST /folders`: every folder this machine found, with the skills in each. Answered with the folders
- * to sync and, for each, the skills that sync there. A skill left out stays local to its folder.
+ * `POST /folders`: every folder this machine found, with the skills in each, for the dashboard. Answered
+ * with the enabled folders, each with the synced list: the daemon pushes and pulls exactly those skills,
+ * and never touches any other.
  */
 export interface FoldersRequest {
   readonly folders: ReadonlyArray<{ readonly path: string; readonly skills: ReadonlyArray<LocalSkill> }>;
@@ -103,7 +102,7 @@ export type HubToDaemon =
 
 export interface SkillView {
   readonly name: string;
-  /** Checked on the dashboard: this folder sends and receives the skill. */
+  /** On the list of synced skills, which every enabled folder sends and receives. */
   readonly synced: boolean;
   /** The folder has a copy on disk. */
   readonly local: boolean;
@@ -131,7 +130,7 @@ export interface MachineView {
   readonly folders: ReadonlyArray<FolderView>;
 }
 
-/** A skill as the server holds it: the synced version every opted-in folder converges on. */
+/** A skill on the synced list, as the server holds it: the version every enabled folder converges on. */
 export interface SyncedSkill {
   readonly name: string;
   readonly files: ReadonlyArray<FileHash & { readonly updatedBy: string; readonly updatedAt: number }>;
@@ -157,6 +156,7 @@ export interface Snapshot {
 /** Dashboard → hub. */
 export type DashboardMessage =
   | { readonly type: "setFolder"; readonly machine: string; readonly path: string; readonly enabled: boolean }
-  | { readonly type: "setSkill"; readonly machine: string; readonly folder: string; readonly skill: string; readonly synced: boolean }
+  /** Adds a skill to the synced list, or removes it: one list for every machine and folder. */
+  | { readonly type: "setSkill"; readonly skill: string; readonly synced: boolean }
   /** An empty name restores the machine name. */
   | { readonly type: "renameMachine"; readonly machine: string; readonly name: string };

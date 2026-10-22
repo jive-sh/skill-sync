@@ -55,8 +55,8 @@ export function isQuiet(report: Report): boolean {
 }
 
 /**
- * `skills` are the skills this folder has opted into. Everything else in the folder is local to it: never
- * pushed, never overwritten, never deleted by a sync.
+ * `skills` is the synced list. Every other skill in the folder is local to it: never pushed, never
+ * overwritten, never deleted by a sync.
  */
 export async function syncOnce(
   config: Config, folder: string, state: State, skills: ReadonlySet<string>, reconciler?: Reconciler,
@@ -67,10 +67,10 @@ export async function syncOnce(
   };
   mkdirSync(folder, { recursive: true });
 
-  // A skill opted in since last cycle may have server files older than the cursor; re-read from the start.
+  // A skill added to the list since last cycle may have server files older than the cursor; re-read from the start.
   if ([...skills].some((skill) => !(state.skills ?? []).includes(skill))) state.cursor = 0;
   state.skills = [...skills].sort();
-  // A skill opted out stops being tracked here. Left in `known`, its files would look deleted from this
+  // A skill removed from the list stops being tracked here. Left in `known`, its files would look deleted from this
   // folder and the push would tombstone them on every machine.
   for (const path of Object.keys(state.known)) {
     if (!skills.has(skillOf(path))) delete state.known[path];

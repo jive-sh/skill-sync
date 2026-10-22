@@ -58,7 +58,7 @@ export interface State {
   cursor: number;
   /** Last hash this machine agreed with the server on, per relative path. Absent means never synced. */
   known: Record<string, string>;
-  /** The skills this folder synced last cycle, to notice one being opted in. */
+  /** The synced list as of last cycle, to notice a skill being added to it. */
   skills?: string[];
 }
 

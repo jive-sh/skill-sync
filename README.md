@@ -24,7 +24,7 @@ The daemon registers itself to start at login when the package is installed.
 
 `https://skill-sync.jive.sh/` shows, live:
 
-- **Synced skills**: the shared version of every skill that syncs, and who changed it last.
+- **Synced skills**: the list, with the shared version of each skill and who changed it last.
 - **Reconciliation log**: every merge Claude made — which computer, which folder and file, what
   conflicted and how it was resolved — so you can audit them.
 - **Computers**: each machine (renameable), whether its daemon is running, its Claude folders, and the
@@ -33,17 +33,19 @@ The daemon registers itself to start at login when the package is installed.
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
 
-Each folder and each skill has a checkbox. An unchecked folder does not sync at all; an unchecked skill
-stays local to its folder — never sent, never overwritten. Choices are stored on the server, so they apply
-at once and survive a reinstall. Defaults: a new folder syncs and receives every shared skill — cloned
-where it has none, merged by Claude where it has its own copy of the same name; a skill that exists only
-in one folder stays local until you check it.
+The server holds one list of skills to sync. Every enabled folder on every machine pushes and pulls
+exactly the skills on that list, and never touches any other skill. A skill's checkbox adds it to the
+list or removes it, for every machine at once. A folder's checkbox turns syncing on or off for that
+folder. Both are stored on the server, so they apply at once and survive a reinstall.
+
+A folder that lacks a listed skill gets a copy. A folder that has its own copy of a listed skill under
+the same name has the two merged by Claude.
 
 ## Conflicts
 
 Every write is a compare-and-swap on the file's current hash, so a change made in two places at once is
-never silently overwritten. When a file changed both locally and on the server — or a folder opts into a
-skill it already has a different copy of — the daemon asks Claude, with no tools, to merge the two (using
+never silently overwritten. When a file changed both locally and on the server — or a skill added to the list
+already exists in a folder as a different copy — the daemon asks Claude, with no tools, to merge the two (using
 the last agreed version when there is one), writes the merge, pushes it, and logs the explanation to the
 dashboard. Both versions are copied first to `~/.jive/skill-sync/reconciled/`.
 

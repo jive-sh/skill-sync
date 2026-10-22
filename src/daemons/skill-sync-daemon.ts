@@ -14,9 +14,9 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon } from "../in
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
  *
- * Folders are detected (`~/.claude*` homes); which of them sync, and which skills in each, are
- * preferences held by the server and changed from the dashboard, so they survive a reinstall and apply
- * the moment they change. A skill not opted in stays local to its folder.
+ * Folders are detected (`~/.claude*` homes). Which of them sync, and the one list of skills that syncs in
+ * all of them, are held by the server and changed from the dashboard, so they survive a reinstall and
+ * apply the moment they change. A skill not on the list is never pushed or pulled.
  *
  * The daemon holds a WebSocket to the service's hub. That connection is how the dashboard knows this
  * machine is running, how a preference change arrives, and how a write from another machine triggers a
@@ -68,7 +68,7 @@ function current(): Config {
 
 /** What was last registered, so registration is repeated only when a folder or skill appears or goes. */
 let registered = "";
-/** The folders to sync, each with the skills that sync there. */
+/** The enabled folders, each with the synced list. */
 let prefs = new Map<string, ReadonlySet<string>>();
 const watchers = new Map<string, FSWatcher>();
 
@@ -76,13 +76,13 @@ const watchers = new Map<string, FSWatcher>();
 
 /** Reports this machine's folders and skills, and adopts the server's answer for what syncs. */
 async function registerFolders(): Promise<void> {
-  const request = describe(current(), states);
+  const request = describe(current());
   applyPrefs(await register(current(), request));
   registered = JSON.stringify(request);
 }
 
 /** True when a folder or a skill has appeared or gone since the last registration. */
-const registrationStale = (): boolean => JSON.stringify(describe(current(), states)) !== registered;
+const registrationStale = (): boolean => JSON.stringify(describe(current())) !== registered;
 
 function applyPrefs(folders: ReadonlyArray<FolderPrefs>): void {
   // Only folders this machine still has. The hub can hold a stale list — it answers a reconnect before

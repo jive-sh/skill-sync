@@ -9,7 +9,7 @@ A daemon finds each Claude home on the machine (`~/.claude` and every `~/.claude
 token and opens the dashboard. The CLI never handles the passkey.
 
 ```
-skill-sync login     verify with your passkey in the browser and store this machine's token
+skill-sync login     verify with your passkey in the browser, store this machine's token, start the daemon
 skill-sync logout    revoke this machine's token
 skill-sync upgrade   upgrade with the package manager that installed it
 ```

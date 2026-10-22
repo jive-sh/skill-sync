@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { Command } from "commander";
 import { Effect } from "effect";
-import { upgrade } from "jive-abstract-library";
+import { daemonStatuses, upgrade } from "jive-abstract-library";
+import { spawnSync } from "node:child_process";
 import { name } from "../../package.json";
 import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings } from "../internal/config";
 
@@ -32,6 +33,7 @@ program
     const token = await captureToken(settings.endpoint, settings.machine);
     writeFileSync(TOKEN_PATH, `${JSON.stringify({ token }, null, 2)}\n`, { mode: 0o600 });
     console.log(`Signed in. Token saved to ${TOKEN_PATH}`);
+    await restartDaemons();
     console.log(`Choose which folders sync at ${settings.endpoint}/`);
   });
 
@@ -65,6 +67,33 @@ program
 
 program.parse();
 if (process.argv.length <= 2) program.help();
+
+/**
+ * Restarts this package's registered daemons so they pick up the token just saved.
+ *
+ * A daemon starts the moment it is installed, which is before anyone has signed in, so it finds no token
+ * and exits cleanly — and service managers restart only daemons that fail. Without this, a fresh install
+ * showed up on the dashboard as signed in but offline until the next login to the computer.
+ */
+async function restartDaemons(): Promise<void> {
+  const statuses = await Effect.runPromise(daemonStatuses).catch(() => []);
+  const ours = statuses.filter((status) => status.registration.packageName === name && status.executableExists);
+  if (ours.length === 0) {
+    console.log("No skill-sync daemon is registered on this machine; reinstall skill-sync to register one.");
+    return;
+  }
+  for (const { registration } of ours) {
+    const command: string[] = registration.kind === "launchd"
+      ? ["launchctl", "kickstart", "-k", `gui/${process.getuid?.() ?? 0}/${registration.unit}`]
+      : registration.kind === "systemd"
+        ? ["systemctl", "--user", "restart", registration.unit]
+        : ["schtasks", "/Run", "/TN", registration.unit];
+    const result = spawnSync(command[0]!, command.slice(1), { stdio: ["ignore", "ignore", "pipe"] });
+    console.log(result.status === 0
+      ? `Started the skill-sync daemon (${registration.unit}).`
+      : `Could not start ${registration.unit}: ${String(result.stderr ?? "").trim() || `exit ${result.status}`}`);
+  }
+}
 
 /**
  * Opens the browser at the service's login endpoint and waits for it to come back with a token.

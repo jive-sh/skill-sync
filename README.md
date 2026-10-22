@@ -4,13 +4,14 @@ Keeps the skills you choose identical across every Claude folder on every machin
 
 A daemon finds each Claude home on the machine (`~/.claude` and every `~/.claude-<name>`) and syncs the
 `skills` folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash.
-`skill-sync login` opens `skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey
-(from any passkey manager, such as Google Password Manager); the service then hands the CLI a per-machine
-token and opens the dashboard. The CLI never handles the passkey.
+`skill-sync login` asks the daemon to sign in and opens `skill-sync.jive.sh` in your browser, where you
+verify with your jive.sh passkey (from any passkey manager, such as Google Password Manager). The service
+hands a per-machine token straight to the daemon, which keeps it only in memory — never in a file, never
+in the CLI — and starts syncing. After a reboot, a crash or an upgrade, run `skill-sync login` again.
 
 ```
-skill-sync login     verify with your passkey in the browser, store this machine's token, start the daemon
-skill-sync logout    revoke this machine's token
+skill-sync login     sign this machine in with your passkey; the daemon starts syncing
+skill-sync logout    revoke this machine's token and stop syncing
 skill-sync upgrade   upgrade with the package manager that installed it
 ```
 
@@ -51,6 +52,7 @@ beside it as `<file>.local`, with a desktop notification and a "needs attention"
 
 ## Configuration
 
-`~/.jive/skill-sync.json` holds the endpoint and the machine name, written on first run.
-`~/.skill-sync-token.json` holds the token alone, at mode 0600, written by `skill-sync login` rather than
-by hand. Merges run under the machine's default `claude` login.
+`~/.jive/skill-sync.json` holds the endpoint and the machine name, written on first run. Nothing secret is
+stored on disk: the CLI reaches the daemon over `~/.jive/skill-sync.sock` (a named pipe on Windows), which
+only your user can open, and the daemon deletes the `~/.skill-sync-token.json` older versions wrote. Merges
+run under the Claude account of the folder being merged.

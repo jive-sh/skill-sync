@@ -1,19 +1,16 @@
-import { createServer } from "node:http";
-import { spawn } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { Effect } from "effect";
 import { daemonStatuses, upgrade } from "jive-abstract-library";
-import { spawnSync } from "node:child_process";
 import { name } from "../../package.json";
-import { CONFIG_PATH, TOKEN_PATH, loadConfig, loadSettings } from "../internal/config";
+import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } from "../internal/control";
 
 /**
- * The CLI that accompanies the daemon.
+ * The CLI that accompanies the daemon: `login`, `logout` and `upgrade`, and nothing else — which folders
+ * and skills sync is chosen on the dashboard.
  *
- * The daemon never authenticates anyone — it reads a token the CLI left behind and nothing more. Signing
- * in needs a browser and a person, which a process started at login has neither of, and a daemon that
- * could prompt for credentials would be a daemon that prompts you at every login.
+ * The daemon owns the sync token and keeps it only in memory. `login` and `logout` are requests to it over
+ * the control socket; the token goes from the browser straight to the daemon and never through here.
  */
 
 const program = new Command("skill-sync")
@@ -21,38 +18,30 @@ const program = new Command("skill-sync")
 
 program
   .command("login")
-  .description("verify with your passkey in the browser and store this machine's sync token")
+  .description("sign this machine in with your passkey in the browser; the daemon keeps the token in memory")
   .action(async () => {
-    // A missing token is exactly what we are here to fix, so only the settings have to be usable.
-    const settings = loadSettings();
-    if (settings === undefined) {
-      console.error(`Fill in ${CONFIG_PATH} with an endpoint and a machine name first.`);
-      process.exit(1);
+    const result = await withDaemon({ type: "login" }, (event) => {
+      if (event.type !== "open") return;
+      console.log(`Opening ${event.url}`);
+      openBrowser(event.url);
+    });
+    if (result.type === "signedIn") {
+      console.log(`Signed in. ${result.machine} is syncing; choose what syncs at https://skill-sync.jive.sh/`);
+    } else {
+      fail(result);
     }
-
-    const token = await captureToken(settings.endpoint, settings.machine);
-    writeFileSync(TOKEN_PATH, `${JSON.stringify({ token }, null, 2)}\n`, { mode: 0o600 });
-    console.log(`Signed in. Token saved to ${TOKEN_PATH}`);
-    await restartDaemons();
-    console.log(`Choose which folders sync at ${settings.endpoint}/`);
   });
 
 program
   .command("logout")
-  .description("forget this machine's sync token")
+  .description("revoke this machine's token and stop syncing until the next login")
   .action(async () => {
-    const loaded = loadConfig();
-    if (loaded.ok) {
-      // Revoke first: if this fails, the token is still on disk and you can try again. Deleting it first
-      // would leave a live token on the server that nobody can revoke any more.
-      const response = await fetch(`${loaded.config.endpoint}/cli/token`, {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${loaded.config.token}` },
-      });
-      console.log(response.ok ? "Revoked on the server." : `Server revoke failed (${response.status}).`);
+    const result = await withDaemon({ type: "logout" }, () => undefined);
+    if (result.type === "signedOut") {
+      console.log(result.revoked ? "Signed out; the token is revoked." : "Signed out locally; the server could not be reached to revoke the token.");
+    } else {
+      fail(result);
     }
-    rmSync(TOKEN_PATH, { force: true });
-    console.log(`Removed ${TOKEN_PATH}`);
   });
 
 program
@@ -69,17 +58,40 @@ program.parse();
 if (process.argv.length <= 2) program.help();
 
 /**
- * Restarts this package's registered daemons so they pick up the token just saved.
- *
- * A daemon starts the moment it is installed, which is before anyone has signed in, so it finds no token
- * and exits cleanly — and service managers restart only daemons that fail. Without this, a fresh install
- * showed up on the dashboard as signed in but offline until the next login to the computer.
+ * Sends a request to the running daemon. If none is listening — stopped, or never started since the
+ * install — this package's registered daemon is started through its service manager and the request is
+ * retried for a few seconds.
  */
-async function restartDaemons(): Promise<void> {
+async function withDaemon(message: ControlRequest, onEvent: (event: ControlEvent) => void): Promise<ControlEvent> {
+  try {
+    return await request(message, onEvent);
+  } catch (cause) {
+    if (!(cause instanceof DaemonUnreachable)) throw cause;
+  }
+  await startDaemons();
+  for (let attempt = 0; ; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      return await request(message, onEvent);
+    } catch (cause) {
+      if (!(cause instanceof DaemonUnreachable) || attempt >= 20) {
+        console.error(`${cause instanceof Error ? cause.message : String(cause)}. Reinstall skill-sync to register its daemon.`);
+        process.exit(1);
+      }
+    }
+  }
+}
+
+function fail(event: ControlEvent): never {
+  console.error(event.type === "error" ? event.message : `unexpected answer from the daemon: ${JSON.stringify(event)}`);
+  process.exit(1);
+}
+
+/** Starts this package's registered daemons through their service manager. */
+async function startDaemons(): Promise<void> {
   const statuses = await Effect.runPromise(daemonStatuses).catch(() => []);
   const ours = statuses.filter((status) => status.registration.packageName === name && status.executableExists);
   if (ours.length === 0) {
-    console.log("No skill-sync daemon is registered on this machine; reinstall skill-sync to register one.");
     return;
   }
   for (const { registration } of ours) {
@@ -89,44 +101,10 @@ async function restartDaemons(): Promise<void> {
         ? ["systemctl", "--user", "restart", registration.unit]
         : ["schtasks", "/Run", "/TN", registration.unit];
     const result = spawnSync(command[0]!, command.slice(1), { stdio: ["ignore", "ignore", "pipe"] });
-    console.log(result.status === 0
-      ? `Started the skill-sync daemon (${registration.unit}).`
-      : `Could not start ${registration.unit}: ${String(result.stderr ?? "").trim() || `exit ${result.status}`}`);
+    if (result.status !== 0) {
+      console.error(`Could not start ${registration.unit}: ${String(result.stderr ?? "").trim() || `exit ${result.status}`}`);
+    }
   }
-}
-
-/**
- * Opens the browser at the service's login endpoint and waits for it to come back with a token.
- *
- * The browser does the authenticating, with a passkey for the service's domain; this only has to be
- * listening when it finishes. The listener is bound to 127.0.0.1 so nothing off this machine can receive
- * the redirect, and the port is whatever the OS hands out so two machines — or two attempts — never
- * contend for one.
- */
-async function captureToken(endpoint: string, machine: string): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const server = createServer((request, response) => {
-      const token = new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("token");
-      response.writeHead(200, { "content-type": "text/html" });
-      response.end(token
-        ? "<p>Signed in. You can close this tab.</p>"
-        : "<p>No token in the redirect. Check the service logs.</p>");
-      server.close();
-      token ? resolve(token) : reject(new Error("the redirect carried no token"));
-    });
-
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as { port: number }).port;
-      const url = `${endpoint}/cli/login?port=${port}&machine=${encodeURIComponent(machine)}`;
-      console.log(`Opening ${url}`);
-      openBrowser(url);
-    });
-
-    setTimeout(() => {
-      server.close();
-      reject(new Error("timed out waiting for the browser"));
-    }, 180_000).unref();
-  });
 }
 
 function openBrowser(url: string): void {

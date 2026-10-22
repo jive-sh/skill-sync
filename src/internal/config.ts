@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 
 /**
- * Per-machine settings and sync state, both under `~/.jive/`.
+ * Per-machine settings and sync state, both under `~/.jive/`. The sync token is not here: it lives only in
+ * the running daemon's memory.
  *
  * A file rather than environment variables: the endpoint and which machine this is differ per computer
  * and have to survive a login, which is exactly what a config file is for and exactly what an environment
@@ -14,19 +15,26 @@ import { join, relative, sep } from "node:path";
 
 const JIVE_HOME = join(homedir(), ".jive");
 export const CONFIG_PATH = join(JIVE_HOME, "skill-sync.json");
-/**
- * The token lives on its own, outside `~/.jive/`, because it is the one part that must not travel with
- * the rest. Endpoint and machine name are settings you could paste into a gist; this
- * is a credential, and keeping it in a separate file makes "do not copy this one" a property of the
- * filesystem rather than a thing you have to remember.
- */
-export const TOKEN_PATH = join(homedir(), ".skill-sync-token.json");
 const STATE_PATH = join(JIVE_HOME, "skill-sync-state.json");
+/**
+ * Where versions before 0.3 kept the sync token. The token now lives only in the running daemon's memory,
+ * so the daemon deletes this file whenever it finds one: a credential left on disk is one anything that
+ * can read the home directory can copy.
+ */
+export const LEGACY_TOKEN_PATH = join(homedir(), ".skill-sync-token.json");
+/**
+ * How the CLI reaches the running daemon: a Unix socket in `~/.jive/`, or a named pipe on Windows. Only
+ * this user can open either, which is what lets the CLI hand the daemon work that involves the token.
+ */
+export const CONTROL_SOCKET = process.platform === "win32"
+  ? `\\\\.\\pipe\\jive-skill-sync-${userInfo().username}`
+  : join(JIVE_HOME, "skill-sync.sock");
 
-/** Managed by Claude's own cloud sync; see `Config.exclude`. */
+/** Managed by Claude's own cloud sync; see `Settings.exclude`. */
 const DEFAULT_EXCLUDE = ["synced"] as const;
 
-export interface Config {
+/** What `~/.jive/skill-sync.json` holds: nothing secret, so it can live in a file. */
+export interface Settings {
   readonly endpoint: string;
   /**
    * Top-level directory names under each synced folder to leave alone.
@@ -35,15 +43,14 @@ export interface Config {
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
    */
   readonly exclude: ReadonlyArray<string>;
-  readonly token: string;
   /** Names this machine in conflict messages, so "who overwrote this" has an answer. */
   readonly machine: string;
 }
 
-/** Either the settings, or the one sentence telling the user what to go and fill in. */
-export type ConfigResult =
-  | { readonly ok: true; readonly config: Config }
-  | { readonly ok: false; readonly reason: string };
+/** Settings plus the token, which exists only in the daemon's memory after a sign-in. */
+export interface Config extends Settings {
+  readonly token: string;
+}
 
 /** Sync progress for one folder. Each folder syncs with the server on its own, so each has its own. */
 export interface State {
@@ -59,20 +66,10 @@ export interface State {
 export type States = Record<string, State>;
 
 /**
- * The settings alone, with no token required.
- *
- * `login` needs these precisely when the token is missing, so it cannot go through `loadConfig` — that
- * reports "not configured" for a missing token and would refuse to run the command that supplies one.
+ * The settings, writing a template on first run. Undefined when the file lacks an endpoint or a machine
+ * name, which only happens if someone edited it.
  */
-export function loadSettings(): { endpoint: string; machine: string } | undefined {
-  loadConfig();
-  const settings = readJson<Partial<Config>>(CONFIG_PATH);
-  if (!settings.endpoint || !settings.machine) return undefined;
-  return { endpoint: settings.endpoint, machine: settings.machine };
-}
-
-/** Reads both files, writing a template for whichever is missing, and says what is still needed. */
-export function loadConfig(): ConfigResult {
+export function loadSettings(): Settings | undefined {
   if (!existsSync(CONFIG_PATH)) {
     mkdirSync(JIVE_HOME, { recursive: true });
     writeFileSync(CONFIG_PATH, `${JSON.stringify({
@@ -81,26 +78,9 @@ export function loadConfig(): ConfigResult {
       exclude: DEFAULT_EXCLUDE,
     }, null, 2)}\n`);
   }
-
-  if (!existsSync(TOKEN_PATH)) {
-    // 0600 from the moment it exists, rather than written open and tightened afterwards — there is no
-    // window in between for anything else on the machine to read it.
-    writeFileSync(TOKEN_PATH, `${JSON.stringify({ token: "" }, null, 2)}\n`, { mode: 0o600 });
-  }
-
-  const settings = readJson<Partial<Config>>(CONFIG_PATH);
-  const token = readJson<{ token?: string }>(TOKEN_PATH).token;
-
-  if (!settings.endpoint || !settings.machine) {
-    return { ok: false, reason: `${CONFIG_PATH} needs an endpoint and a machine name` };
-  }
-  if (!token) {
-    return { ok: false, reason: `${TOKEN_PATH} needs the sync token` };
-  }
-  return {
-    ok: true,
-    config: { endpoint: settings.endpoint, machine: settings.machine, exclude: settings.exclude ?? DEFAULT_EXCLUDE, token },
-  };
+  const settings = readJson<Partial<Settings>>(CONFIG_PATH);
+  if (!settings.endpoint || !settings.machine) return undefined;
+  return { endpoint: settings.endpoint, machine: settings.machine, exclude: settings.exclude ?? DEFAULT_EXCLUDE };
 }
 
 function readJson<T>(path: string): T {

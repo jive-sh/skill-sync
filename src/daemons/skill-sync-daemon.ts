@@ -1,6 +1,10 @@
-import { mkdirSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, rmSync, watch, type FSWatcher } from "node:fs";
+import { createServer } from "node:http";
 import { exitWhenUninstalled } from "jive-abstract-library";
-import { detectFolders, loadConfig, loadStates, saveStates, stateFor } from "../internal/config";
+import {
+  LEGACY_TOKEN_PATH, detectFolders, loadSettings, loadStates, saveStates, stateFor, type Config,
+} from "../internal/config";
+import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { authHeaders, describe, logReconciliations, register } from "../internal/folders";
 import { notify } from "../internal/notify";
 import { reconcile } from "../internal/reconcile";
@@ -18,6 +22,10 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon } from "../in
  * machine is running, how a preference change arrives, and how a write from another machine triggers a
  * cycle here at once. Polling stays as the fallback: every 5 minutes while connected, every 30 seconds
  * while not, so a dropped connection costs latency and never correctness.
+ *
+ * The sync token exists only in this process's memory. The daemon starts signed out and waits; `skill-sync
+ * login` asks it, over the control socket, to sign in, and the token arrives from the browser straight to
+ * this process. A restart means signing in again — the price of never writing the credential down.
  */
 
 const POLL_CONNECTED_MS = 5 * 60_000;
@@ -29,18 +37,34 @@ const PING_MS = 30_000;
 const PONG_TIMEOUT_MS = 75_000;
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 5 * 60_000;
+/** How long a sign-in waits for the browser before giving up. */
+const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
 exitWhenUninstalled();
 
-const loaded = loadConfig();
-if (!loaded.ok) {
-  console.error(`skill-sync is not configured: ${loaded.reason}`);
-  // Zero, not one: the service manager restarts a daemon that fails, and retrying every few seconds
-  // against a config nobody has filled in yet would just fill the log.
+// Versions before 0.3 wrote the token to a file. It is never read: a credential left on disk is one
+// anything that can read the home directory can copy.
+if (existsSync(LEGACY_TOKEN_PATH)) {
+  rmSync(LEGACY_TOKEN_PATH, { force: true });
+  console.log(`deleted ${LEGACY_TOKEN_PATH}; the token now lives only in this daemon's memory`);
+}
+
+const settings = loadSettings();
+if (settings === undefined) {
+  console.error("~/.jive/skill-sync.json needs an endpoint and a machine name");
+  // Zero, not one: the service manager restarts a daemon that fails, and a file nobody has fixed would
+  // only fill the log.
   process.exit(0);
 }
-const config = loaded.config;
 const states = loadStates();
+
+/** Set while signed in. Everything that talks to the server reads it; signing out clears it. */
+let session: Config | undefined;
+/** The signed-in config, for code that only runs during a session. */
+function current(): Config {
+  if (session === undefined) throw new Error("not signed in");
+  return session;
+}
 
 /** What was last registered, so registration is repeated only when a folder or skill appears or goes. */
 let registered = "";
@@ -52,13 +76,13 @@ const watchers = new Map<string, FSWatcher>();
 
 /** Reports this machine's folders and skills, and adopts the server's answer for what syncs. */
 async function registerFolders(): Promise<void> {
-  const request = describe(config, states);
-  applyPrefs(await register(config, request));
+  const request = describe(current(), states);
+  applyPrefs(await register(current(), request));
   registered = JSON.stringify(request);
 }
 
 /** True when a folder or a skill has appeared or gone since the last registration. */
-const registrationStale = (): boolean => JSON.stringify(describe(config, states)) !== registered;
+const registrationStale = (): boolean => JSON.stringify(describe(current(), states)) !== registered;
 
 function applyPrefs(folders: ReadonlyArray<FolderPrefs>): void {
   // Only folders this machine still has. The hub can hold a stale list — it answers a reconnect before
@@ -108,6 +132,8 @@ let reconnectDelay = RECONNECT_MIN_MS;
 const reported = new Map<string, string>();
 
 function connect(): void {
+  if (session === undefined) return;
+  const config = session;
   const url = `${config.endpoint.replace(/^http/, "ws")}/daemon`;
   // Bun's WebSocket takes headers; the browser's does not, which is why the token can travel this way.
   const ws = new WebSocket(url, { headers: authHeaders(config, {}) } as unknown as string[]);
@@ -132,6 +158,9 @@ function connect(): void {
   };
   ws.onclose = () => {
     if (socket === ws) socket = undefined;
+    // Only the session that opened it reconnects: after a sign-out, or a sign-in with a new token, this
+    // socket belongs to nobody.
+    if (session !== config) return;
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
   };
@@ -200,6 +229,7 @@ function summarise(result: Report): string {
 }
 
 async function runCycle(): Promise<void> {
+  if (session === undefined) return;
   if (running) {
     cycleQueued = true;
     return;
@@ -211,7 +241,7 @@ async function runCycle(): Promise<void> {
     // pulled into the others on the follow-up pass this triggers.
     for (const [folder, skills] of [...prefs]) {
       try {
-        const result = await syncOnce(config, folder, stateFor(states, folder), skills, {
+        const result = await syncOnce(current(), folder, stateFor(states, folder), skills, {
           merge: reconcile,
           onMerging: (path) => {
             console.log(`${folder}: merging ${path} with Claude`);
@@ -221,7 +251,7 @@ async function runCycle(): Promise<void> {
         saveStates(states);
         log(folder, result);
         if (result.reconciliations.length > 0) {
-          await logReconciliations(config, result.reconciliations.map((entry) => ({ ...entry, folder })))
+          await logReconciliations(current(), result.reconciliations.map((entry) => ({ ...entry, folder })))
             .catch((cause) => console.error(`could not log a merge: ${cause instanceof Error ? cause.message : String(cause)}`));
         }
         conflicts.push(...result.conflicts.map((path) => `${folder}/${path}`));
@@ -260,17 +290,108 @@ function log(folder: string, result: Report): void {
   for (const path of result.rejected) console.error(`${folder}: refused a path the server sent: ${path}`);
 }
 
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
 /** Re-detects folders each poll: a Claude home created since the last one should join without a restart. */
 async function poll(): Promise<void> {
+  if (session === undefined) return;
   try {
     if (registered === "" || registrationStale()) await registerFolders();
   } catch (cause) {
     console.error(`could not register folders: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   await runCycle();
-  setTimeout(poll, socket === undefined ? POLL_DISCONNECTED_MS : POLL_CONNECTED_MS);
+  if (session !== undefined) pollTimer = setTimeout(poll, socket === undefined ? POLL_DISCONNECTED_MS : POLL_CONNECTED_MS);
 }
 
-console.log(`skill-sync daemon for ${config.machine}, syncing with ${config.endpoint}`);
-connect();
-await poll();
+// ── Signing in and out ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Starts a session with a token from the browser. Registering this machine's folders is the first call
+ * that needs the token, so it doubles as the check that the token works: a failure leaves the daemon
+ * signed out, not half-running.
+ */
+async function signIn(token: string): Promise<void> {
+  if (session !== undefined) await signOut();
+  session = { ...settings!, token };
+  try {
+    await registerFolders();
+  } catch (cause) {
+    session = undefined;
+    throw cause;
+  }
+  console.log(`signed in as ${session.machine}; syncing with ${session.endpoint}`);
+  connect();
+  void poll();
+}
+
+/** Revokes the token on the server, forgets it, and stops syncing. Returns whether the revoke succeeded. */
+async function signOut(): Promise<boolean> {
+  const config = session;
+  if (config === undefined) return false;
+  session = undefined;
+  if (pollTimer !== undefined) clearTimeout(pollTimer);
+  socket?.close();
+  socket = undefined;
+  for (const watcher of watchers.values()) watcher.close();
+  watchers.clear();
+  prefs = new Map();
+  registered = "";
+  // Revoked, not just forgotten: a token copied while it was live would otherwise keep working.
+  const revoked = await fetch(`${config.endpoint}/cli/token`, { method: "DELETE", headers: authHeaders(config, {}) })
+    .then((response) => response.ok, () => false);
+  console.log(`signed out${revoked ? "" : " (the server could not be reached to revoke the token)"}`);
+  return revoked;
+}
+
+let loginInProgress = false;
+
+/**
+ * One sign-in: listen on 127.0.0.1 for the browser to hand over the token, tell the CLI which URL to
+ * open, and finish when the token arrives. The browser's login page posts to this listener only, never to
+ * an address the request chose, so a page that tricks you into signing in cannot collect the token.
+ */
+function login(reply: Reply): void {
+  if (loginInProgress) {
+    reply.send({ type: "error", message: "a sign-in is already in progress" });
+    return;
+  }
+  loginInProgress = true;
+  const done = (): void => {
+    loginInProgress = false;
+    listener.close();
+    clearTimeout(timer);
+  };
+  const listener = createServer((request, response) => {
+    const token = new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("token");
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(token ? "<p>Signed in. You can close this tab.</p>" : "<p>No token in the redirect.</p>");
+    if (token === null) return;
+    done();
+    signIn(token).then(
+      () => reply.send({ type: "signedIn", machine: settings!.machine }),
+      (cause) => reply.send({ type: "error", message: `the server refused the sign-in: ${cause instanceof Error ? cause.message : String(cause)}` }),
+    );
+  });
+  const timer = setTimeout(() => {
+    done();
+    reply.send({ type: "error", message: "timed out waiting for the browser" });
+  }, LOGIN_TIMEOUT_MS);
+  listener.listen(0, "127.0.0.1", () => {
+    const port = (listener.address() as { port: number }).port;
+    reply.send({ type: "open", url: `${settings!.endpoint}/cli/login?port=${port}&machine=${encodeURIComponent(settings!.machine)}` });
+  });
+}
+
+function handleControl(message: ControlRequest, reply: Reply): void {
+  if (message.type === "login") login(reply);
+  else if (message.type === "logout") void signOut().then((revoked) => reply.send({ type: "signedOut", revoked }));
+  else reply.send({ type: "error", message: `unknown request ${JSON.stringify(message)}` });
+}
+
+if (await serve(handleControl) === false) {
+  console.log("another skill-sync daemon is already running for this user; standing down");
+  // Zero: a second install's daemon is not a failure, and the service manager must not keep retrying it.
+  process.exit(0);
+}
+console.log(`skill-sync daemon for ${settings.machine}; waiting for \`skill-sync login\``);

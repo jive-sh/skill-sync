@@ -34,9 +34,9 @@ one. The page reloads itself when a new version of the service is deployed.
 
 Each folder and each skill has a checkbox. An unchecked folder does not sync at all; an unchecked skill
 stays local to its folder — never sent, never overwritten. Choices are stored on the server, so they apply
-at once and survive a reinstall. Defaults: a new folder syncs; a skill already synced there stays synced;
-a skill that exists only in one folder stays local until you check it; a shared skill a folder does not
-have yet is delivered to it.
+at once and survive a reinstall. Defaults: a new folder syncs and receives every shared skill — cloned
+where it has none, merged by Claude where it has its own copy of the same name; a skill that exists only
+in one folder stays local until you check it.
 
 ## Conflicts
 

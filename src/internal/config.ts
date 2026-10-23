@@ -43,7 +43,7 @@ export interface Settings {
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
    */
   readonly exclude: ReadonlyArray<string>;
-  /** Names this machine in conflict messages, so "who overwrote this" has an answer. */
+  /** Names this machine on the server: on the dashboard, and as the machine each edit came from. */
   readonly machine: string;
 }
 

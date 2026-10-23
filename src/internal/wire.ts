@@ -70,6 +70,19 @@ export interface FoldersResponse {
   readonly folders: ReadonlyArray<FolderPrefs>;
 }
 
+/** `GET /skills`: the synced list, as `skill-sync list` shows it. Deleted skills are not on it. */
+export interface ListSkillsResponse {
+  readonly skills: ReadonlyArray<ListedSkill>;
+}
+export interface ListedSkill {
+  readonly name: string;
+  /** Live files on the server; zero for a skill ticked before any machine has pushed it. */
+  readonly files: number;
+  /** The latest edit of any of its files, and the display name of the machine it came from; null with no files. */
+  readonly editedAt: number | null;
+  readonly editedBy: string | null;
+}
+
 /** Daemon → hub, over the daemon's WebSocket. */
 export type DaemonMessage = {
   readonly type: "status";

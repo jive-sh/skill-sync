@@ -1,25 +1,29 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { chmodSync, rmSync } from "node:fs";
 import { CONTROL_SOCKET } from "./config";
+import type { ListedSkill } from "./wire";
 
 /**
  * The channel between the CLI and the running daemon.
  *
  * The daemon owns the sync token: it receives it from the browser and keeps it only in memory, so it is
- * never in a file and never passes through the CLI. The CLI's `login` and `logout` are requests to the
- * daemon over this channel. Messages are newline-delimited JSON; each request gets events until one that
+ * never in a file and never passes through the CLI. The CLI's `login`, `logout` and `list` are requests to
+ * the daemon over this channel. Messages are newline-delimited JSON; each request gets events until one that
  * ends it.
  */
 
 export type ControlRequest =
   | { readonly type: "login" }
-  | { readonly type: "logout" };
+  | { readonly type: "logout" }
+  /** The synced list, which the daemon fetches from the server with its token. */
+  | { readonly type: "list" };
 
 export type ControlEvent =
   /** Sign-in has started: the CLI opens this URL in the browser, where the passkey is verified. */
   | { readonly type: "open"; readonly url: string }
   | { readonly type: "signedIn"; readonly machine: string }
   | { readonly type: "signedOut"; readonly revoked: boolean }
+  | { readonly type: "list"; readonly skills: ReadonlyArray<ListedSkill> }
   | { readonly type: "error"; readonly message: string };
 
 const isFinal = (event: ControlEvent): boolean => event.type !== "open";

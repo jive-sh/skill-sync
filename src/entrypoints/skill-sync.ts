@@ -6,11 +6,11 @@ import { name } from "../../package.json";
 import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } from "../internal/control";
 
 /**
- * The CLI that accompanies the daemon: `login`, `logout` and `upgrade`, and nothing else — which folders
- * and skills sync is chosen on the dashboard.
+ * The CLI that accompanies the daemon: `login`, `logout`, `list` and `upgrade`, and nothing else — which
+ * folders and skills sync is chosen on the dashboard.
  *
- * The daemon owns the sync token and keeps it only in memory. `login` and `logout` are requests to it over
- * the control socket; the token goes from the browser straight to the daemon and never through here.
+ * The daemon owns the sync token and keeps it only in memory. `login`, `logout` and `list` are requests to
+ * it over the control socket; the token goes from the browser straight to the daemon and never through here.
  */
 
 const program = new Command("skill-sync")
@@ -41,6 +41,25 @@ program
       console.log(result.revoked ? "Signed out; the token is revoked." : "Signed out locally; the server could not be reached to revoke the token.");
     } else {
       fail(result);
+    }
+  });
+
+program
+  .command("list")
+  .description("list the skills that sync, as the server holds them; needs this machine signed in")
+  .action(async () => {
+    const result = await withDaemon({ type: "list" }, () => undefined);
+    if (result.type !== "list") fail(result);
+    if (result.skills.length === 0) {
+      console.log("No skills sync yet; tick them at https://skill-sync.jive.sh/");
+      return;
+    }
+    const width = Math.max(...result.skills.map((skill) => skill.name.length));
+    for (const skill of result.skills) {
+      const detail = skill.editedAt === null
+        ? "no files yet"
+        : `${skill.files} ${skill.files === 1 ? "file" : "files"}, last edited ${new Date(skill.editedAt).toLocaleString()} on ${skill.editedBy}`;
+      console.log(`${skill.name.padEnd(width)}  ${detail}`);
     }
   });
 

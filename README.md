@@ -12,6 +12,7 @@ in the CLI — and starts syncing. After a reboot, a crash or an upgrade, run `s
 ```
 skill-sync login     sign this machine in with your passkey; the daemon starts syncing
 skill-sync logout    revoke this machine's token and stop syncing
+skill-sync list      list the skills that sync, as the server holds them (needs a sign-in)
 skill-sync upgrade   upgrade with the package manager that installed it
 ```
 

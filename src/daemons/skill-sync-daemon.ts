@@ -7,7 +7,7 @@ import {
 import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { authHeaders, describe, register } from "../internal/folders";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
-import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon } from "../internal/wire";
+import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsResponse } from "../internal/wire";
 
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
@@ -337,9 +337,25 @@ function login(reply: Reply): void {
   });
 }
 
+/** The synced list, from the server: the CLI has no token to ask with, so it asks this daemon. */
+function list(reply: Reply): void {
+  const config = session;
+  if (config === undefined) {
+    reply.send({ type: "error", message: "this machine is signed out; run `skill-sync login` first" });
+    return;
+  }
+  fetch(`${config.endpoint}/skills`, { headers: authHeaders(config, {}) })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`GET /skills: ${response.status} ${await response.text()}`);
+      reply.send({ type: "list", skills: (await response.json() as ListSkillsResponse).skills });
+    })
+    .catch((cause: unknown) => reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` }));
+}
+
 function handleControl(message: ControlRequest, reply: Reply): void {
   if (message.type === "login") login(reply);
   else if (message.type === "logout") void signOut().then((revoked) => reply.send({ type: "signedOut", revoked }));
+  else if (message.type === "list") list(reply);
   else reply.send({ type: "error", message: `unknown request ${JSON.stringify(message)}` });
 }
 

@@ -5,9 +5,7 @@ import {
   LEGACY_TOKEN_PATH, detectFolders, loadSettings, loadStates, saveStates, stateFor, type Config,
 } from "../internal/config";
 import { serve, type ControlRequest, type Reply } from "../internal/control";
-import { authHeaders, describe, logReconciliations, register } from "../internal/folders";
-import { notify } from "../internal/notify";
-import { reconcile } from "../internal/reconcile";
+import { authHeaders, describe, register } from "../internal/folders";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
 import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon } from "../internal/wire";
 
@@ -97,7 +95,7 @@ function applyPrefs(folders: ReadonlyArray<FolderPrefs>): void {
     }
   }
   // An unticked folder leaves no trace of syncing: its state goes, so the state file lists only folders
-  // that sync, and ticking it again starts it fresh — any copy that differs is merged, not overwritten.
+  // that sync, and ticking it again starts it fresh.
   // Covers folders with state from an earlier run too, not only ones this run was syncing.
   const stopped = [...new Set([...prefs.keys(), ...Object.keys(states)])].filter((folder) => !next.has(folder));
   for (const folder of stopped) {
@@ -142,7 +140,7 @@ function connect(): void {
     lastPong = Date.now();
     reconnectDelay = RECONNECT_MIN_MS;
     console.log("connected to the hub");
-    // A previous run may have died mid-merge; whatever the hub last heard is stale until re-sent.
+    // Whatever the hub last heard from a previous connection is stale until re-sent.
     reported.clear();
     for (const folder of prefs.keys()) report(folder, "idle");
   };
@@ -193,37 +191,11 @@ function report(folder: string, state: FolderState, detail?: string, activity?: 
 let running = false;
 let cycleQueued = false;
 
-/**
- * Conflicts already reported to the desktop.
- *
- * A conflict persists until a human resolves it, so every cycle keeps finding it — notifying each time
- * would put a popup on screen every cycle until they gave up and turned notifications off, which costs
- * them the one notification that mattered. Only newly-conflicting paths are announced, and a path drops
- * out of the set once it stops conflicting so a later recurrence is announced again.
- */
-const announced = new Set<string>();
-
-function announceConflicts(conflicts: ReadonlyArray<string>): void {
-  for (const path of [...announced]) {
-    if (!conflicts.includes(path)) announced.delete(path);
-  }
-  const fresh = conflicts.filter((path) => !announced.has(path));
-  if (fresh.length === 0) return;
-  for (const path of fresh) announced.add(path);
-  notify(
-    "Skill sync conflict",
-    fresh.length === 1
-      ? `${fresh[0]} changed on two machines and could not be merged. Your version is saved as ${fresh[0]}.local`
-      : `${fresh.length} skills changed on two machines and could not be merged. Your versions are saved as .local`,
-  );
-}
-
 function summarise(result: Report): string {
   const parts = [
     result.pulled.length > 0 ? `pulled ${result.pulled.join(", ")}` : "",
     result.pushed.length > 0 ? `pushed ${result.pushed.join(", ")}` : "",
     result.deletedLocally.length > 0 ? `deleted ${result.deletedLocally.join(", ")}` : "",
-    result.merged.length > 0 ? `merged ${result.merged.join(", ")}` : "",
   ];
   return parts.filter(Boolean).join("; ");
 }
@@ -235,32 +207,18 @@ async function runCycle(): Promise<void> {
     return;
   }
   running = true;
-  const conflicts: string[] = [];
   try {
     // Folders sync one after another against the same server, so a change pushed from one folder is
     // pulled into the others on the follow-up pass this triggers.
     for (const [folder, skills] of [...prefs]) {
       try {
-        const result = await syncOnce(current(), folder, stateFor(states, folder), skills, {
-          merge: reconcile,
-          onMerging: (path) => {
-            console.log(`${folder}: merging ${path} with Claude`);
-            report(folder, "reconciling", path);
-          },
-        });
+        const result = await syncOnce(current(), folder, stateFor(states, folder), skills);
         saveStates(states);
         log(folder, result);
-        if (result.reconciliations.length > 0) {
-          await logReconciliations(current(), result.reconciliations.map((entry) => ({ ...entry, folder })))
-            .catch((cause) => console.error(`could not log a merge: ${cause instanceof Error ? cause.message : String(cause)}`));
-        }
-        conflicts.push(...result.conflicts.map((path) => `${folder}/${path}`));
-
-        const problems = [...result.mergeFailures, ...result.conflicts.map((path) => `${path} kept as .local`), ...result.rejected];
-        if (problems.length > 0) report(folder, "attention", problems.join("; "), summarise(result) || undefined);
+        if (result.rejected.length > 0) report(folder, "attention", result.rejected.join("; "), summarise(result) || undefined);
         else report(folder, "idle", undefined, isQuiet(result) ? undefined : summarise(result));
-
-        if (result.pushed.length > 0 || result.merged.length > 0 || result.retry) cycleQueued = true;
+        // What this folder pushed is pulled into the machine's other folders on the follow-up pass.
+        if (result.pushed.length > 0) cycleQueued = true;
       } catch (cause) {
         // One failed folder must not end the daemon or the other folders: the usual cause is the network.
         const reason = cause instanceof Error ? cause.message : String(cause);
@@ -268,7 +226,6 @@ async function runCycle(): Promise<void> {
         report(folder, "attention", `sync failed: ${reason}`);
       }
     }
-    announceConflicts(conflicts);
     // A skill created or removed locally changes what the dashboard should list.
     if (registrationStale()) await registerFolders().catch(() => undefined);
   } finally {
@@ -284,9 +241,6 @@ function log(folder: string, result: Report): void {
   for (const path of result.pulled) console.log(`${folder}: pulled ${path}`);
   for (const path of result.pushed) console.log(`${folder}: pushed ${path}`);
   for (const path of result.deletedLocally) console.log(`${folder}: deleted ${path}`);
-  for (const path of result.merged) console.log(`${folder}: merged ${path}`);
-  for (const failure of result.mergeFailures) console.error(`${folder}: merge failed for ${failure}`);
-  for (const path of result.conflicts) console.error(`${folder}: conflict on ${path}; your copy is at ${path}.local`);
   for (const path of result.rejected) console.error(`${folder}: refused a path the server sent: ${path}`);
 }
 

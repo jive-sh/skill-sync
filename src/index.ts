@@ -10,6 +10,6 @@ export { invalidPathReason, isValidPath } from "./internal/path";
 export { skillOf } from "./internal/wire";
 export type {
   DaemonMessage, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
-  HubToDaemon, ListFilesResponse, LocalSkill, MachineView, PutFileRequest, ReconciliationRequest,
-  ReconciliationView, RemoteFile, SkillView, Snapshot, SyncedSkill,
+  HubToDaemon, ListFilesResponse, LocalSkill, MachineView, PutFileRequest, RemoteFile,
+  SkillView, Snapshot, SyncedSkill,
 } from "./internal/wire";

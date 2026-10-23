@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectFolders, hashBytes, listLocalFiles, type Config } from "./config";
 import {
-  skillOf, type FileHash, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill, type ReconciliationRequest,
+  skillOf, type FileHash, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill,
 } from "./wire";
 
 /**
@@ -45,18 +45,6 @@ export async function register(config: Config, request: FoldersRequest): Promise
   });
   if (!response.ok) throw new Error(`POST /folders: ${response.status} ${await response.text()}`);
   return (await response.json() as FoldersResponse).folders;
-}
-
-/** Sends merges to the audit log. A failure here is logged by the caller, never fatal to a sync. */
-export async function logReconciliations(config: Config, entries: ReadonlyArray<ReconciliationRequest>): Promise<void> {
-  for (const entry of entries) {
-    const response = await fetch(`${config.endpoint}/reconciliations`, {
-      method: "POST",
-      headers: authHeaders(config, { "content-type": "application/json" }),
-      body: JSON.stringify(entry),
-    });
-    if (!response.ok) throw new Error(`POST /reconciliations: ${response.status} ${await response.text()}`);
-  }
 }
 
 export function authHeaders(config: Config, extra: Record<string, string>): Record<string, string> {

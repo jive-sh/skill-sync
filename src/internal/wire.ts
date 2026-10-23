@@ -7,10 +7,10 @@
 
 export interface RemoteFile {
   readonly path: string;
-  /** Null when the file is deleted; the row stays as a tombstone. */
+  /** Null when the file is deleted; the row stays, so the deletion reaches every machine. */
   readonly hash: string | null;
-  readonly deleted: boolean;
-  readonly updatedAt: number;
+  /** When this version was edited, in milliseconds since the epoch. The latest edit wins. */
+  readonly editedAt: number;
   readonly updatedBy: string;
 }
 
@@ -20,10 +20,11 @@ export interface ListFilesResponse {
   readonly files: ReadonlyArray<RemoteFile>;
 }
 
+/** Taken only when `editedAt` is later than the edit the server holds; refused with 409 otherwise. */
 export interface PutFileRequest {
   readonly path: string;
-  /** What the client believes the server holds. The write is refused if that is no longer true. */
-  readonly baseHash: string | null;
+  /** When the file was edited: its modification time, or for a deletion, when it was noticed. */
+  readonly editedAt: number;
   /** Null to delete. */
   readonly hash: string | null;
   /** Base64, absent for a delete. */
@@ -31,13 +32,8 @@ export interface PutFileRequest {
   readonly machine: string;
 }
 
-/**
- * Where a folder's sync stands, as the dashboard shows it.
- *
- * `reconciling` means Claude is merging two versions of a file on that machine; `attention` means a cycle
- * failed or a conflict could not be merged, and `detail` says which.
- */
-export type FolderState = "idle" | "reconciling" | "attention";
+/** Where a folder's sync stands, as the dashboard shows it. `attention` means a cycle failed; `detail` says why. */
+export type FolderState = "idle" | "attention";
 
 /**
  * A skill is a top-level entry of a skills folder — usually a directory like `jive/` holding `SKILL.md`
@@ -72,17 +68,6 @@ export interface FolderPrefs {
 }
 export interface FoldersResponse {
   readonly folders: ReadonlyArray<FolderPrefs>;
-}
-
-/** `POST /reconciliations`: one merge Claude did, or failed to do, for the audit log. */
-export interface ReconciliationRequest {
-  readonly folder: string;
-  readonly path: string;
-  readonly outcome: "merged" | "failed";
-  /** What differed between the two versions, in a sentence or two. */
-  readonly conflict: string;
-  /** What the merge kept, dropped or reworded — or why it failed. */
-  readonly resolution: string;
 }
 
 /** Daemon → hub, over the daemon's WebSocket. */
@@ -133,12 +118,7 @@ export interface MachineView {
 /** A skill on the synced list, as the server holds it: the version every enabled folder converges on. */
 export interface SyncedSkill {
   readonly name: string;
-  readonly files: ReadonlyArray<FileHash & { readonly updatedBy: string; readonly updatedAt: number }>;
-}
-
-export interface ReconciliationView extends ReconciliationRequest {
-  readonly at: number;
-  readonly machine: string;
+  readonly files: ReadonlyArray<FileHash & { readonly updatedBy: string; readonly editedAt: number }>;
 }
 
 /** Hub → dashboard: the whole picture, resent on every change. It is small, and a diff protocol is not. */
@@ -149,7 +129,6 @@ export interface Snapshot {
   /** Display name for every machine name that appears anywhere in the snapshot, including old log entries. */
   readonly names: Readonly<Record<string, string>>;
   readonly skills: ReadonlyArray<SyncedSkill>;
-  readonly reconciliations: ReadonlyArray<ReconciliationView>;
   readonly machines: ReadonlyArray<MachineView>;
 }
 

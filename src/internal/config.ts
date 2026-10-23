@@ -142,16 +142,10 @@ export function hashBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** Suffix for the copy kept when an incoming change would have overwritten a local edit. */
-export const CONFLICT_SUFFIX = ".local";
-
 /**
  * Every file under a synced folder, as paths relative to it with forward slashes.
  *
  * Normalised because the same skill synced from Windows and macOS must be one row, not two.
- *
- * Conflict copies are skipped. They are this machine's evidence of a collision, not content anyone else
- * asked for, and syncing them spreads one machine's mess to every other machine.
  */
 export function listLocalFiles(folder: string, exclude: ReadonlyArray<string> = DEFAULT_EXCLUDE): string[] {
   if (!existsSync(folder)) return [];
@@ -163,7 +157,7 @@ export function listLocalFiles(folder: string, exclude: ReadonlyArray<string> = 
       if (top && exclude.includes(entry)) continue;
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) walk(full, false);
-      else if (!entry.endsWith(CONFLICT_SUFFIX)) found.push(relative(folder, full).split(sep).join("/"));
+      else found.push(relative(folder, full).split(sep).join("/"));
     }
   };
   walk(folder, true);

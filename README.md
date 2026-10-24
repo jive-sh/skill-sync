@@ -4,8 +4,8 @@ Keeps the skills you choose identical across every Claude and Codex skills folde
 work on.
 
 A daemon finds each agent home on the machine (Claude's `~/.claude` and every `~/.claude-<name>`, and
-Codex's `~/.agents`) and syncs the `skills` folder in each through a Cloudflare Worker: file index in D1,
-contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
+Codex's `~/.agents`, counted as soon as either `~/.agents` or `~/.codex` exists) and syncs the `skills`
+folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
 `skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey (from any passkey
 manager, such as Google Password Manager). The service hands a per-machine token straight to the daemon,
 which keeps it only in memory — never in a file, never in the CLI — and starts syncing. After a reboot, a

@@ -127,17 +127,19 @@ function machineName(): string {
 
 /**
  * The `skills` folder of every agent home on this machine: Claude's `~/.claude` and each
- * `~/.claude-<name>`, and Codex's `~/.agents`, whose `skills` folder is where Codex reads a user's skills.
+ * `~/.claude-<name>`, and Codex's `~/.agents/skills`, where Codex reads a user's skills. Codex counts when
+ * either `~/.agents` or Codex's own home `~/.codex` exists, because a machine with Codex installed may
+ * have no `~/.agents` yet.
  *
  * Every home is a candidate, whether or not it has a `skills` folder yet, so a Claude account added
  * later joins without anyone listing it. Which of them actually sync is the user's choice on the
  * dashboard; a folder that is synced and missing is created.
  */
 export function detectFolders(): string[] {
-  return readdirSync(homedir())
-    .filter((entry) => entry === ".claude" || entry.startsWith(".claude-") || entry === ".agents")
+  return [...new Set(readdirSync(homedir())
+    .filter((entry) => entry === ".claude" || entry.startsWith(".claude-") || entry === ".agents" || entry === ".codex")
     .filter((entry) => statSync(join(homedir(), entry)).isDirectory())
-    .map((entry) => join(homedir(), entry, "skills"))
+    .map((entry) => join(homedir(), entry === ".codex" ? ".agents" : entry, "skills")))]
     .sort();
 }
 

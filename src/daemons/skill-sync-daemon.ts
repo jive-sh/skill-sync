@@ -12,10 +12,10 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsRe
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
  *
- * Folders are detected: the `skills` folder in each `~/.claude*` home and in `~/.agents`. Which of them
- * sync, and the one list of skills that syncs in all of them, are held by the server and changed from the
- * dashboard, so they survive a reinstall and apply the moment they change. A skill not on the list is
- * never pushed or pulled.
+ * Folders are detected: the `skills` folder in each `~/.claude*` home and Codex's `~/.agents/skills`
+ * (see `detectFolders`). Which of them sync, and the one list of skills that syncs in all of them, are
+ * held by the server and changed from the dashboard, so they survive a reinstall and apply the moment
+ * they change. A skill not on the list is never pushed or pulled.
  *
  * The daemon holds a WebSocket to the service's hub. That connection is how the dashboard knows this
  * machine is running, how a preference change arrives, and how a write from another machine triggers a

@@ -41,6 +41,8 @@ export interface Settings {
    *
    * `synced` holds the skills Claude already pulls from the cloud itself. Syncing them here would mean
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
+   * The list applies to every detected folder, so in Codex's `~/.agents/skills` it keeps a skill named
+   * `synced` from syncing.
    */
   readonly exclude: ReadonlyArray<string>;
   /** Names this machine on the server: on the dashboard, and as the machine each edit came from. */
@@ -124,7 +126,8 @@ function machineName(): string {
 }
 
 /**
- * The `skills` folder of every Claude home on this machine: `~/.claude` and each `~/.claude-<name>`.
+ * The `skills` folder of every agent home on this machine: Claude's `~/.claude` and each
+ * `~/.claude-<name>`, and Codex's `~/.agents`, whose `skills` folder is where Codex reads a user's skills.
  *
  * Every home is a candidate, whether or not it has a `skills` folder yet, so a Claude account added
  * later joins without anyone listing it. Which of them actually sync is the user's choice on the
@@ -132,7 +135,7 @@ function machineName(): string {
  */
 export function detectFolders(): string[] {
   return readdirSync(homedir())
-    .filter((entry) => entry === ".claude" || entry.startsWith(".claude-"))
+    .filter((entry) => entry === ".claude" || entry.startsWith(".claude-") || entry === ".agents")
     .filter((entry) => statSync(join(homedir(), entry)).isDirectory())
     .map((entry) => join(homedir(), entry, "skills"))
     .sort();

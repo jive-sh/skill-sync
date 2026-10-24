@@ -12,9 +12,10 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsRe
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
  *
- * Folders are detected (`~/.claude*` homes). Which of them sync, and the one list of skills that syncs in
- * all of them, are held by the server and changed from the dashboard, so they survive a reinstall and
- * apply the moment they change. A skill not on the list is never pushed or pulled.
+ * Folders are detected: the `skills` folder in each `~/.claude*` home and in `~/.agents`. Which of them
+ * sync, and the one list of skills that syncs in all of them, are held by the server and changed from the
+ * dashboard, so they survive a reinstall and apply the moment they change. A skill not on the list is
+ * never pushed or pulled.
  *
  * The daemon holds a WebSocket to the service's hub. That connection is how the dashboard knows this
  * machine is running, how a preference change arrives, and how a write from another machine triggers a
@@ -84,7 +85,7 @@ const registrationStale = (): boolean => JSON.stringify(describe(current())) !==
 
 function applyPrefs(folders: ReadonlyArray<FolderPrefs>): void {
   // Only folders this machine still has. The hub can hold a stale list — it answers a reconnect before
-  // the next registration — and creating a listed folder whose Claude home is gone would bring it back.
+  // the next registration — and creating a listed folder whose agent home is gone would bring it back.
   const present = new Set(detectFolders());
   const next = new Map(folders.filter((folder) => present.has(folder.path))
     .map((folder) => [folder.path, new Set(folder.skills)] as const));
@@ -246,7 +247,7 @@ function log(folder: string, result: Report): void {
 
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** Re-detects folders each poll: a Claude home created since the last one should join without a restart. */
+/** Re-detects folders each poll: an agent home created since the last one should join without a restart. */
 async function poll(): Promise<void> {
   if (session === undefined) return;
   try {

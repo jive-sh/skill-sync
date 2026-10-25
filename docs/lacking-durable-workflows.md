@@ -41,3 +41,31 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the installer that registers the signing agent also writes the git and SSH settings that
   point at it, so they cannot disagree.
 - **Belongs in:** ozy-cli's install (and Jive's key handling, which is meant to move server-side).
+
+## ozy-cli's tests never run in CI
+- **By hand:** an agent ran `bun test` in ozy-cli before releasing 0.5.0 and found all 4 tests in
+  `src/modules/cli/package/package-json.test.ts` failing (the schema requires `$schema` and `license`; the
+  fixtures omit them). CI never saw this: ozy-cli's `jive:cicd:audit` runs only `tsc`.
+- **Should be:** the audit hook runs the package's tests, so a failing test fails the build.
+- **Belongs in:** ozy-cli's `jive:cicd:audit` script, once the tests pass; generally, jive-abstract-library's
+  scaffolded audit script.
+
+## Proving a release builds before it publishes
+- **By hand:** every push to a deploy branch publishes, so before pushing ozy-cli 0.5.0 to `main` an agent
+  copied the package to a temporary directory and ran `CI=true bun run jive:cicd:build` there, to avoid
+  burning a version on a broken build.
+- **Should be:** releases land through a pull request whose pipeline run (build and audit, no deploy) gates
+  the merge to the deploy branch.
+- **Belongs in:** the release practice for Jive packages and branch protection on their repos; the pipeline
+  already runs on pull requests (`runsOnPullRequests`).
+
+## npm trusted publishers set up per package on npmjs.com
+- **By hand:** ozy-cli 0.5.0's first publish through jive-abstract-library failed with `ENEEDAUTH` on every
+  platform tarball ([run](https://github.com/ozyman42/ozy-cli/actions/runs/40235464175)). 0.4.9 was published
+  over OIDC from the build job, with no GitHub environment; the library publishes from the deploy job in the
+  `latest` environment, and the package's npm trusted publisher has to be edited by hand on npmjs.com to match
+  (workflow `pipeline.yml`, environment `latest`, "Allow npm publish").
+- **Should be:** moving a package onto an abstract, or scaffolding one, writes its trusted publisher to match
+  the pipeline, through the custodian (`@jive-sh/app`) so the one npm consent is given once.
+- **Belongs in:** jive-abstract-library (it knows the workflow and environment names) calling `@jive-sh/app`.
+  ozy-cli's `INpm.ensureTrustedPublisher` already posts to npm's trust endpoint but sets no environment.

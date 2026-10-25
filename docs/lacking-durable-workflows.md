@@ -96,3 +96,19 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the build runs each compiled command (`--version`) from a directory with no `node_modules`
   and the checkout path absent, and fails the build if it crashes, before anything publishes.
 - **Belongs in:** jive-abstract-library's builder, so every package built from it gets the check.
+
+## Auto-upgrade installs before npm serves the platform build
+- **By hand:** rose's daemon first tried to install 0.4.6 as soon as `latest-darwin-x64` named it, got a 404 for
+  `skill-sync-0.4.6-latest-darwin-x64.tgz`, and only succeeded on its next check 5 minutes later. An agent read
+  the log to learn why.
+- **Should be:** `autoUpgrade` checks that this platform's tarball downloads before installing, and retries
+  sooner than the 5-minute interval when the tag is ahead of the download.
+- **Belongs in:** jive-abstract-library's `autoUpgrade` (shared library, so a change for Alex to approve).
+
+## Checking the live dashboard needs a passkey
+- **By hand:** after each service deploy, an agent can confirm sync from daemon logs and D1, but cannot see the
+  live dashboard: it needs a passkey session, and a passkey prompt in an agent's browser times out with nobody
+  there to approve it.
+- **Should be:** a deploy check that reads the live hub's snapshot with a credential the pipeline holds (for
+  example a read-only dashboard token), so a broken page fails the deploy instead of being found by Alex.
+- **Belongs in:** skill-sync-service's deploy step, once the service is on the Jive pipeline.

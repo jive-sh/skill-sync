@@ -1,7 +1,7 @@
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { createServer } from "node:http";
 import { autoUpgrade, exitWhenUninstalled } from "jive-abstract-library";
-import { name } from "../../package.json";
+import { name, version } from "../../package.json";
 import {
   TOKEN_PATH, deleteToken, detectFolders, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
   type Config,
@@ -10,7 +10,9 @@ import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { describe, register } from "../internal/folders";
 import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
-import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsResponse } from "../internal/wire";
+import {
+  DAEMON_VERSION_HEADER, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
+} from "../internal/wire";
 
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
@@ -135,7 +137,8 @@ function connect(): void {
   const config = session;
   const url = `${config.endpoint.replace(/^http/, "ws")}/daemon`;
   // Bun's WebSocket takes headers; the browser's does not, which is why the token can travel this way.
-  const ws = new WebSocket(url, { headers: authHeaders(config, {}) } as unknown as string[]);
+  // The version goes with it: an upgrade restarts the daemon, so each connection runs exactly one version.
+  const ws = new WebSocket(url, { headers: authHeaders(config, { [DAEMON_VERSION_HEADER]: version }) } as unknown as string[]);
   ws.onopen = () => {
     socket = ws;
     lastPong = Date.now();

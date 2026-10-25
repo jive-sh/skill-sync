@@ -69,3 +69,12 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   the pipeline, through the custodian (`@jive-sh/app`) so the one npm consent is given once.
 - **Belongs in:** jive-abstract-library (it knows the workflow and environment names) calling `@jive-sh/app`.
   ozy-cli's `INpm.ensureTrustedPublisher` already posts to npm's trust endpoint but sets no environment.
+
+## skill-sync-service is deployed and tested by hand
+- **By hand:** the service behind skill-sync.jive.sh lives in `packages/@jive-sh/skill-sync-service` in the chaine
+  checkout, outside git. An agent runs its end-to-end test (`test/e2e.ts`) against a local `wrangler dev`, then
+  deploys with `wrangler deploy` from that checkout. It builds against a local `dist/base` of this package, not a
+  published version.
+- **Should be:** the service in its own repo on the Jive pipeline, with the end-to-end test in its audit hook and
+  `wrangler deploy` as its deploy hook, depending on a published @jive-sh/skill-sync.
+- **Belongs in:** a new repo for the service, extending an app or service abstract once one exists.

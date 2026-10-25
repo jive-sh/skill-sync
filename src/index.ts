@@ -7,7 +7,7 @@
  */
 
 export { invalidPathReason, isValidPath } from "./internal/path";
-export { skillOf } from "./internal/wire";
+export { DAEMON_VERSION_HEADER, skillOf } from "./internal/wire";
 export type {
   DaemonMessage, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
   HubToDaemon, ListedSkill, ListFilesResponse, ListSkillsResponse, LocalSkill, MachineView, PutFileRequest, RemoteFile,

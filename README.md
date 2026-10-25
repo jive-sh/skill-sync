@@ -17,6 +17,7 @@ skill-sync login     sign this machine in with your passkey; the daemon starts s
 skill-sync logout    revoke this machine's token and stop syncing
 skill-sync list      list the skills that sync, as the server holds them (needs a sign-in)
 skill-sync upgrade   upgrade with the package manager that installed it
+skill-sync version   print the installed version
 ```
 
 Everything else — which folders and skills sync, renaming computers — is on the
@@ -29,11 +30,12 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 
 ## The dashboard
 
-`https://skill-sync.jive.sh/` shows, live:
+`https://skill-sync.jive.sh/` shows, live, the latest version published on npm, and:
 
 - **Synced skills**: the list, with the shared version of each skill and where it was last edited.
-- **Computers**: each machine (renameable), whether its daemon is running, its skills folders, and the
-  skills in each with their files.
+- **Computers**: each machine (renameable), whether its daemon is running and which version it runs, its
+  skills folders, and the skills in each with their files. A daemon older than the published version is
+  marked "update pending"; it upgrades itself within 5 minutes.
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.

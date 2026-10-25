@@ -2,11 +2,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { Effect } from "effect";
 import { daemonStatuses, upgrade } from "jive-abstract-library";
-import { name } from "../../package.json";
+import { name, version } from "../../package.json";
 import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } from "../internal/control";
 
 /**
- * The CLI that accompanies the daemon: `login`, `logout`, `list` and `upgrade`, and nothing else — which
+ * The CLI that accompanies the daemon: `login`, `logout`, `list`, `upgrade` and `version`, and nothing else — which
  * folders and skills sync is chosen on the dashboard.
  *
  * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout` and
@@ -72,6 +72,13 @@ program
       console.error(`Upgrade failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       process.exit(1);
     });
+  });
+
+program
+  .command("version")
+  .description("print the version of skill-sync installed here")
+  .action(() => {
+    console.log(version);
   });
 
 program.parse();

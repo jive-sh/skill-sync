@@ -83,6 +83,12 @@ export interface ListedSkill {
   readonly editedBy: string | null;
 }
 
+/**
+ * The header a daemon names its own version in when it opens its WebSocket to the hub, so the dashboard
+ * can show which version each machine runs. Daemons before 0.4.6 do not send it.
+ */
+export const DAEMON_VERSION_HEADER = "x-skill-sync-version";
+
 /** Daemon → hub, over the daemon's WebSocket. */
 export type DaemonMessage = {
   readonly type: "status";
@@ -124,6 +130,8 @@ export interface MachineView {
   readonly name: string;
   /** True while this machine's daemon holds a connection to the hub. */
   readonly online: boolean;
+  /** The version its connected daemon runs; null while offline, or when the daemon is too old to say. */
+  readonly daemonVersion: string | null;
   readonly lastSeen: number | null;
   readonly folders: ReadonlyArray<FolderView>;
 }
@@ -139,6 +147,8 @@ export interface Snapshot {
   readonly type: "snapshot";
   /** The deployed service version. A dashboard built by another version reloads itself. */
   readonly version: string;
+  /** The `latest` version of this package on npm, which every daemon upgrades to; null if npm could not be reached. */
+  readonly publishedVersion: string | null;
   /** Display name for every machine name that appears anywhere in the snapshot, including old log entries. */
   readonly names: Readonly<Record<string, string>>;
   readonly skills: ReadonlyArray<SyncedSkill>;

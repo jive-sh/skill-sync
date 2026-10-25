@@ -78,3 +78,11 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the service in its own repo on the Jive pipeline, with the end-to-end test in its audit hook and
   `wrangler deploy` as its deploy hook, depending on a published @jive-sh/skill-sync.
 - **Belongs in:** a new repo for the service, extending an app or service abstract once one exists.
+
+## Cleaning up daemons registered from a build checkout
+- **By hand:** running `dist/base/bin/<command>` to test a local build registers a second daemon from the checkout
+  (a LaunchAgent and a `~/.jive/daemons` record) beside the real install; an agent then removes it by hand from
+  its record. It has happened at least twice: one such daemon synced skills and then signed the machine out.
+- **Should be:** a durable guard so a build checkout never registers start-at-login daemons, or a test entrypoint
+  that never registers. This changes how the launcher decides to register, so it is a design for Alex to approve.
+- **Belongs in:** jive-abstract-library's launcher (`internal/common/command-launcher.ts`).

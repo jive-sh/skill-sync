@@ -1,6 +1,7 @@
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { createServer } from "node:http";
-import { exitWhenUninstalled } from "jive-abstract-library";
+import { autoUpgrade, exitWhenUninstalled } from "jive-abstract-library";
+import { name } from "../../package.json";
 import {
   TOKEN_PATH, deleteToken, detectFolders, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
   type Config,
@@ -28,6 +29,9 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsRe
  * browser straight to this process, which keeps it in `~/.jive/skill-sync-token.json` (`TOKEN_PATH`). A
  * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
  * sign-in. Signing out, or the server rejecting the token, deletes the file.
+ *
+ * It keeps itself on the latest published version (`autoUpgrade`): every 5 minutes it asks the package
+ * manager that installed it whether a newer one is out, installs it the same way, and is restarted on it.
  */
 
 const POLL_CONNECTED_MS = 5 * 60_000;
@@ -412,7 +416,8 @@ if (await serve(handleControl) === false) {
   // Zero: a second install's daemon is not a failure, and the service manager must not keep retrying it.
   process.exit(0);
 }
-// Only after taking the control socket: a daemon that stands down must not sync too.
+// Only after taking the control socket: a daemon that stands down must not sync, or upgrade, too.
+autoUpgrade({ packageName: name });
 const savedToken = loadToken();
 if (savedToken !== undefined) resume(savedToken);
 else console.log(`skill-sync daemon for ${settings.machine}; waiting for \`skill-sync login\``);

@@ -22,7 +22,10 @@ skill-sync upgrade   upgrade with the package manager that installed it
 Everything else — which folders and skills sync, renaming computers — is on the
 dashboard.
 
-The daemon registers itself to start at login when the package is installed.
+The daemon registers itself to start at login when the package is installed. It also keeps skill-sync up
+to date: every 5 minutes it asks the package manager that installed it (bun, pnpm, yarn or npm, with that
+manager's own registry settings) whether a newer version is published, installs it the same way, and
+restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 
 ## The dashboard
 

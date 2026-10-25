@@ -1,11 +1,13 @@
-import { existsSync, mkdirSync, rmSync, watch, type FSWatcher } from "node:fs";
+import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { createServer } from "node:http";
 import { exitWhenUninstalled } from "jive-abstract-library";
 import {
-  LEGACY_TOKEN_PATH, detectFolders, loadSettings, loadStates, saveStates, stateFor, type Config,
+  TOKEN_PATH, deleteToken, detectFolders, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
+  type Config,
 } from "../internal/config";
 import { serve, type ControlRequest, type Reply } from "../internal/control";
-import { authHeaders, describe, register } from "../internal/folders";
+import { describe, register } from "../internal/folders";
+import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
 import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsResponse } from "../internal/wire";
 
@@ -22,9 +24,10 @@ import type { DaemonMessage, FolderPrefs, FolderState, HubToDaemon, ListSkillsRe
  * cycle here at once. Polling stays as the fallback: every 5 minutes while connected, every 30 seconds
  * while not, so a dropped connection costs latency and never correctness.
  *
- * The sync token exists only in this process's memory. The daemon starts signed out and waits; `skill-sync
- * login` asks it, over the control socket, to sign in, and the token arrives from the browser straight to
- * this process. A restart means signing in again — the price of never writing the credential down.
+ * `skill-sync login` asks the daemon, over the control socket, to sign in; the token arrives from the
+ * browser straight to this process, which keeps it in `~/.jive/skill-sync-token.json` (`TOKEN_PATH`). A
+ * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
+ * sign-in. Signing out, or the server rejecting the token, deletes the file.
  */
 
 const POLL_CONNECTED_MS = 5 * 60_000;
@@ -40,13 +43,6 @@ const RECONNECT_MAX_MS = 5 * 60_000;
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
 exitWhenUninstalled();
-
-// Versions before 0.3 wrote the token to a file. It is never read: a credential left on disk is one
-// anything that can read the home directory can copy.
-if (existsSync(LEGACY_TOKEN_PATH)) {
-  rmSync(LEGACY_TOKEN_PATH, { force: true });
-  console.log(`deleted ${LEGACY_TOKEN_PATH}; the token now lives only in this daemon's memory`);
-}
 
 const settings = loadSettings();
 if (settings === undefined) {
@@ -221,6 +217,10 @@ async function runCycle(): Promise<void> {
         // What this folder pushed is pulled into the machine's other folders on the follow-up pass.
         if (result.pushed.length > 0) cycleQueued = true;
       } catch (cause) {
+        if (cause instanceof TokenRejected) {
+          dropRejectedToken(cause);
+          return;
+        }
         // One failed folder must not end the daemon or the other folders: the usual cause is the network.
         const reason = cause instanceof Error ? cause.message : String(cause);
         console.error(`${folder}: sync failed: ${reason}`);
@@ -228,7 +228,11 @@ async function runCycle(): Promise<void> {
       }
     }
     // A skill created or removed locally changes what the dashboard should list.
-    if (registrationStale()) await registerFolders().catch(() => undefined);
+    if (registrationStale()) {
+      await registerFolders().catch((cause: unknown) => {
+        if (cause instanceof TokenRejected) dropRejectedToken(cause);
+      });
+    }
   } finally {
     running = false;
     if (cycleQueued) {
@@ -253,6 +257,10 @@ async function poll(): Promise<void> {
   try {
     if (registered === "" || registrationStale()) await registerFolders();
   } catch (cause) {
+    if (cause instanceof TokenRejected) {
+      dropRejectedToken(cause);
+      return;
+    }
     console.error(`could not register folders: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   await runCycle();
@@ -264,7 +272,7 @@ async function poll(): Promise<void> {
 /**
  * Starts a session with a token from the browser. Registering this machine's folders is the first call
  * that needs the token, so it doubles as the check that the token works: a failure leaves the daemon
- * signed out, not half-running.
+ * signed out, not half-running, and the token unsaved.
  */
 async function signIn(token: string): Promise<void> {
   if (session !== undefined) await signOut();
@@ -275,16 +283,30 @@ async function signIn(token: string): Promise<void> {
     session = undefined;
     throw cause;
   }
+  saveToken(token);
   console.log(`signed in as ${session.machine}; syncing with ${session.endpoint}`);
   connect();
   void poll();
 }
 
-/** Revokes the token on the server, forgets it, and stops syncing. Returns whether the revoke succeeded. */
-async function signOut(): Promise<boolean> {
+/**
+ * Starts a session with the token saved by an earlier sign-in. Not checked first, unlike `signIn`: at boot
+ * the network may not be up yet, and a failure for that reason must not sign the machine out. The first
+ * poll registers; a rejected token signs out there.
+ */
+function resume(token: string): void {
+  session = { ...settings!, token };
+  console.log(`signed in as ${session.machine} with the token in ${TOKEN_PATH}; syncing with ${session.endpoint}`);
+  connect();
+  void poll();
+}
+
+/** Stops syncing and forgets the token, here and in `TOKEN_PATH`. Returns the session that ended. */
+function endSession(): Config | undefined {
   const config = session;
-  if (config === undefined) return false;
+  if (config === undefined) return undefined;
   session = undefined;
+  deleteToken();
   if (pollTimer !== undefined) clearTimeout(pollTimer);
   socket?.close();
   socket = undefined;
@@ -292,9 +314,27 @@ async function signOut(): Promise<boolean> {
   watchers.clear();
   prefs = new Map();
   registered = "";
+  return config;
+}
+
+/**
+ * The server no longer accepts the token, so no request can succeed until someone signs in again. Only
+ * when it is this session's token: a request still in flight from before a new sign-in may be rejected too.
+ */
+function dropRejectedToken(cause: TokenRejected): void {
+  if (session?.token !== cause.token) return;
+  endSession();
+  console.error(`${cause.message}; signed out and deleted ${TOKEN_PATH}. Run \`skill-sync login\` to sign in again.`);
+}
+
+/** Revokes the token on the server, forgets it, and stops syncing. Returns whether the revoke succeeded. */
+async function signOut(): Promise<boolean> {
+  const config = endSession();
+  if (config === undefined) return false;
   // Revoked, not just forgotten: a token copied while it was live would otherwise keep working.
-  const revoked = await fetch(`${config.endpoint}/cli/token`, { method: "DELETE", headers: authHeaders(config, {}) })
-    .then((response) => response.ok, () => false);
+  // A token the server already rejects is as revoked as it can be.
+  const revoked = await fetchServer(config, "/cli/token", { method: "DELETE" })
+    .then((response) => response.ok, (cause: unknown) => cause instanceof TokenRejected);
   console.log(`signed out${revoked ? "" : " (the server could not be reached to revoke the token)"}`);
   return revoked;
 }
@@ -345,12 +385,19 @@ function list(reply: Reply): void {
     reply.send({ type: "error", message: "this machine is signed out; run `skill-sync login` first" });
     return;
   }
-  fetch(`${config.endpoint}/skills`, { headers: authHeaders(config, {}) })
+  fetchServer(config, "/skills")
     .then(async (response) => {
       if (!response.ok) throw new Error(`GET /skills: ${response.status} ${await response.text()}`);
       reply.send({ type: "list", skills: (await response.json() as ListSkillsResponse).skills });
     })
-    .catch((cause: unknown) => reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` }));
+    .catch((cause: unknown) => {
+      if (cause instanceof TokenRejected) {
+        dropRejectedToken(cause);
+        reply.send({ type: "error", message: "the server rejected this machine's token, so it is signed out; run `skill-sync login`" });
+        return;
+      }
+      reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` });
+    });
 }
 
 function handleControl(message: ControlRequest, reply: Reply): void {
@@ -365,4 +412,7 @@ if (await serve(handleControl) === false) {
   // Zero: a second install's daemon is not a failure, and the service manager must not keep retrying it.
   process.exit(0);
 }
-console.log(`skill-sync daemon for ${settings.machine}; waiting for \`skill-sync login\``);
+// Only after taking the control socket: a daemon that stands down must not sync too.
+const savedToken = loadToken();
+if (savedToken !== undefined) resume(savedToken);
+else console.log(`skill-sync daemon for ${settings.machine}; waiting for \`skill-sync login\``);

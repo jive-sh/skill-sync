@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, st
 import { dirname, join } from "node:path";
 import { hashBytes, listLocalFiles, type Config, type State } from "./config";
 import { invalidPathReason } from "./path";
+import { fetchServer } from "./server";
 import { skillOf, type ListFilesResponse, type PutFileRequest } from "./wire";
 
 /**
@@ -174,9 +175,9 @@ function removeEmptyParents(folder: string, file: string): void {
 /** Undefined when the server took the write; otherwise the later version it holds instead. */
 async function put(config: Config, body: Omit<PutFileRequest, "machine">): Promise<ServerVersion | undefined> {
   const request: PutFileRequest = { ...body, machine: config.machine };
-  const response = await fetch(`${config.endpoint}/files`, {
+  const response = await fetchServer(config, "/files", {
     method: "PUT",
-    headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(request),
   });
   if (response.status === 409) {
@@ -188,9 +189,7 @@ async function put(config: Config, body: Omit<PutFileRequest, "machine">): Promi
 }
 
 async function call(config: Config, path: string): Promise<Response> {
-  const response = await fetch(`${config.endpoint}${path}`, {
-    headers: { authorization: `Bearer ${config.token}` },
-  });
+  const response = await fetchServer(config, path);
   if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${await response.text()}`);
   return response;
 }

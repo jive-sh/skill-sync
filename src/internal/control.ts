@@ -6,9 +6,9 @@ import type { ListedSkill } from "./wire";
 /**
  * The channel between the CLI and the running daemon.
  *
- * The daemon owns the sync token: it receives it from the browser and keeps it only in memory, so it is
- * never in a file and never passes through the CLI. The CLI's `login`, `logout` and `list` are requests to
- * the daemon over this channel. Messages are newline-delimited JSON; each request gets events until one that
+ * The daemon owns the sync token: it receives it from the browser and keeps it in `~/.jive/`, so it never
+ * passes through the CLI. The CLI's `login`, `logout` and `list` are requests to the daemon over this
+ * channel. Messages are newline-delimited JSON; each request gets events until one that
  * ends it.
  */
 

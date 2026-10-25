@@ -8,8 +8,9 @@ Codex's `~/.agents`, counted as soon as either `~/.agents` or `~/.codex` exists)
 folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
 `skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey (from any passkey
 manager, such as Google Password Manager). The service hands a per-machine token straight to the daemon,
-which keeps it only in memory — never in a file, never in the CLI — and starts syncing. After a reboot, a
-crash or an upgrade, run `skill-sync login` again.
+never through the CLI. The daemon keeps it in `~/.jive/skill-sync-token.json` and starts syncing, and it
+stays signed in through restarts, reboots and upgrades until you run `skill-sync logout` or revoke the
+token.
 
 ```
 skill-sync login     sign this machine in with your passkey; the daemon starts syncing
@@ -55,6 +56,8 @@ edits it should not.
 
 ## Configuration
 
-`~/.jive/skill-sync.json` holds the endpoint and the machine name, written on first run. Nothing secret is
-stored on disk: the CLI reaches the daemon over `~/.jive/skill-sync.sock` (a named pipe on Windows), which
-only your user can open, and the daemon deletes the `~/.skill-sync-token.json` older versions wrote.
+`~/.jive/skill-sync.json` holds the endpoint and the machine name, written on first run.
+`~/.jive/skill-sync-token.json` holds this machine's token while it is signed in. It is an ordinary file,
+so anything that can read your home directory can copy the token; signing out, or the server rejecting the
+token, deletes it. The CLI reaches the daemon over `~/.jive/skill-sync.sock` (a named pipe on Windows),
+which only your user can open.

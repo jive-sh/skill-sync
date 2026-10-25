@@ -9,8 +9,9 @@ import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } fr
  * The CLI that accompanies the daemon: `login`, `logout`, `list` and `upgrade`, and nothing else — which
  * folders and skills sync is chosen on the dashboard.
  *
- * The daemon owns the sync token and keeps it only in memory. `login`, `logout` and `list` are requests to
- * it over the control socket; the token goes from the browser straight to the daemon and never through here.
+ * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout` and
+ * `list` are requests to it over the control socket; the token goes from the browser straight to the daemon
+ * and never through here.
  */
 
 const program = new Command("skill-sync")
@@ -18,7 +19,7 @@ const program = new Command("skill-sync")
 
 program
   .command("login")
-  .description("sign this machine in with your passkey in the browser; the daemon keeps the token in memory")
+  .description("sign this machine in with your passkey in the browser; it stays signed in until you log out")
   .action(async () => {
     const result = await withDaemon({ type: "login" }, (event) => {
       if (event.type !== "open") return;

@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, hostname, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 
 /**
- * Per-machine settings and sync state, both under `~/.jive/`. The sync token is not here: it lives only in
- * the running daemon's memory.
+ * Per-machine settings, sync state and the sync token, all under `~/.jive/`.
  *
  * A file rather than environment variables: the endpoint and which machine this is differ per computer
  * and have to survive a login, which is exactly what a config file is for and exactly what an environment
@@ -17,11 +16,11 @@ const JIVE_HOME = join(homedir(), ".jive");
 export const CONFIG_PATH = join(JIVE_HOME, "skill-sync.json");
 const STATE_PATH = join(JIVE_HOME, "skill-sync-state.json");
 /**
- * Where versions before 0.3 kept the sync token. The token now lives only in the running daemon's memory,
- * so the daemon deletes this file whenever it finds one: a credential left on disk is one anything that
- * can read the home directory can copy.
+ * The sync token, written at sign-in so the daemon is still signed in after a restart, a reboot or an
+ * upgrade. An ordinary file: anything that can read the home directory can copy the token, and the
+ * dashboard can revoke it.
  */
-export const LEGACY_TOKEN_PATH = join(homedir(), ".skill-sync-token.json");
+export const TOKEN_PATH = join(JIVE_HOME, "skill-sync-token.json");
 /**
  * How the CLI reaches the running daemon: a Unix socket in `~/.jive/`, or a named pipe on Windows. Only
  * this user can open either, which is what lets the CLI hand the daemon work that involves the token.
@@ -49,7 +48,7 @@ export interface Settings {
   readonly machine: string;
 }
 
-/** Settings plus the token, which exists only in the daemon's memory after a sign-in. */
+/** Settings plus the token, which the daemon has once signed in. */
 export interface Config extends Settings {
   readonly token: string;
 }
@@ -108,6 +107,20 @@ export function loadStates(): States {
     return { [legacyFolder]: { cursor: stored.cursor, known: stored.known } };
   }
   return {};
+}
+
+/** The saved token, or undefined when this machine is signed out. */
+export function loadToken(): string | undefined {
+  return readJson<{ token?: string }>(TOKEN_PATH).token;
+}
+
+export function saveToken(token: string): void {
+  mkdirSync(JIVE_HOME, { recursive: true });
+  writeFileSync(TOKEN_PATH, `${JSON.stringify({ token }, null, 2)}\n`);
+}
+
+export function deleteToken(): void {
+  rmSync(TOKEN_PATH, { force: true });
 }
 
 export function stateFor(states: States, folder: string): State {

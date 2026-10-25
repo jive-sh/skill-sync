@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectFolders, hashBytes, listLocalFiles, type Config } from "./config";
+import { fetchServer } from "./server";
 import {
   skillOf, type FileHash, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill,
 } from "./wire";
@@ -38,15 +39,11 @@ export function describe(config: Config): FoldersRequest {
 
 /** Registers this machine's folders and skills; returns the folders to sync and the skills in each. */
 export async function register(config: Config, request: FoldersRequest): Promise<ReadonlyArray<FolderPrefs>> {
-  const response = await fetch(`${config.endpoint}/folders`, {
+  const response = await fetchServer(config, "/folders", {
     method: "POST",
-    headers: authHeaders(config, { "content-type": "application/json" }),
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(request),
   });
   if (!response.ok) throw new Error(`POST /folders: ${response.status} ${await response.text()}`);
   return (await response.json() as FoldersResponse).folders;
-}
-
-export function authHeaders(config: Config, extra: Record<string, string>): Record<string, string> {
-  return { authorization: `Bearer ${config.token}`, "x-skill-sync-machine": config.machine, ...extra };
 }

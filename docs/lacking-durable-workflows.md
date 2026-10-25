@@ -86,3 +86,13 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** a durable guard so a build checkout never registers start-at-login daemons, or a test entrypoint
   that never registers. This changes how the launcher decides to register, so it is a design for Alex to approve.
 - **Belongs in:** jive-abstract-library's launcher (`internal/common/command-launcher.ts`).
+
+## Running a compiled release away from its build machine
+- **By hand:** ozy-cli 0.5.0 built and published, then every `ozy` command crashed on install with
+  `Cannot find module '/home/runner/work/ozy-cli/ozy-cli/node_modules/playwright-core/package.json'`: a
+  dependency read its package.json from its build-time path at load. CI passed because that path exists on the
+  runner. An agent found it by installing by hand, then proved the 0.5.1 fix by building in a temp copy,
+  deleting its `node_modules`, and running the binary.
+- **Should be:** the build runs each compiled command (`--version`) from a directory with no `node_modules`
+  and the checkout path absent, and fails the build if it crashes, before anything publishes.
+- **Belongs in:** jive-abstract-library's builder, so every package built from it gets the check.

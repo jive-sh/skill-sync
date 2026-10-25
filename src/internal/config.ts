@@ -133,6 +133,13 @@ export function saveStates(states: States): void {
   writeFileSync(STATE_PATH, `${JSON.stringify({ folders: states }, null, 2)}\n`);
 }
 
+/**
+ * A name ending in `.lock` is another program's lock, never an agent home, a skill or a skill's file.
+ * Claude Code locks a path by creating an empty `<path>.lock` folder beside it and removing it when done;
+ * counted as an agent home, `~/.claude-<name>.lock` was filled with skills and the lock could not be released.
+ */
+export const isLock = (name: string): boolean => name.endsWith(".lock");
+
 /** `HOSTNAME` is not set on macOS, so the template was writing "unknown" on exactly this machine. */
 function machineName(): string {
   return hostname().replace(/\.local$/, "").replace(/[^A-Za-z0-9-]+/g, "-") || "unknown";
@@ -151,6 +158,7 @@ function machineName(): string {
 export function detectFolders(): string[] {
   return [...new Set(readdirSync(homedir())
     .filter((entry) => entry === ".claude" || entry.startsWith(".claude-") || entry === ".agents" || entry === ".codex")
+    .filter((entry) => !isLock(entry))
     .filter((entry) => statSync(join(homedir(), entry)).isDirectory())
     .map((entry) => join(homedir(), entry === ".codex" ? ".agents" : entry, "skills")))]
     .sort();
@@ -171,7 +179,7 @@ export function listLocalFiles(folder: string, exclude: ReadonlyArray<string> = 
   const found: string[] = [];
   const walk = (dir: string, top: boolean): void => {
     for (const entry of readdirSync(dir)) {
-      if (entry.startsWith(".")) continue;
+      if (entry.startsWith(".") || isLock(entry)) continue;
       if (top && exclude.includes(entry)) continue;
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) walk(full, false);

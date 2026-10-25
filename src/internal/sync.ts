@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { hashBytes, listLocalFiles, type Config, type State } from "./config";
+import { hashBytes, isLock, listLocalFiles, type Config, type State } from "./config";
 import { invalidPathReason } from "./path";
 import { fetchServer } from "./server";
 import { skillOf, type ListFilesResponse, type PutFileRequest } from "./wire";
@@ -44,7 +44,7 @@ export async function syncOnce(config: Config, folder: string, state: State, ski
   // A skill removed from the list stops being tracked here. Left in `known`, its files would look deleted
   // from this folder and the push would delete them on every machine.
   for (const path of Object.keys(state.known)) {
-    if (!skills.has(skillOf(path))) delete state.known[path];
+    if (!skills.has(skillOf(path)) || path.split("/").some(isLock)) delete state.known[path];
   }
 
   const present = new Set(listLocalFiles(folder, config.exclude).filter((path) => skills.has(skillOf(path))));
@@ -82,6 +82,8 @@ async function pull(ctx: Cycle, deletedHere: ReadonlySet<string>, present: Set<s
       continue;
     }
     if (!ctx.skills.has(skillOf(file.path))) continue;
+    // Never written here: the file listing skips lock names, so a pulled one would read as deleted next cycle.
+    if (file.path.split("/").some(isLock)) continue;
     // Deleted here, which is newer than anything the server has; the push sends the deletion.
     if (deletedHere.has(file.path)) continue;
 

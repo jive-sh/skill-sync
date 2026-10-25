@@ -4,7 +4,8 @@ Keeps the skills you choose identical across every Claude and Codex skills folde
 work on.
 
 A daemon finds each agent home on the machine (Claude's `~/.claude` and every `~/.claude-<name>`, and
-Codex's `~/.agents`, counted as soon as either `~/.agents` or `~/.codex` exists) and syncs the `skills`
+Codex's `~/.agents`, counted as soon as either `~/.agents` or `~/.codex` exists; anything named `*.lock` is
+another program's lock and is ignored, as a home and as a file or folder inside a skills folder) and syncs the `skills`
 folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
 `skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey (from any passkey
 manager, such as Google Password Manager). The service hands a per-machine token straight to the daemon,
@@ -43,7 +44,7 @@ one. The page reloads itself when a new version of the service is deployed.
 The server holds one list of skills to sync. Every enabled folder on every machine pushes and pulls
 exactly the skills on that list, and never touches any other skill. A skill's checkbox adds it to the
 list or removes it, for every machine at once. A folder's checkbox turns syncing on or off for that
-folder; a folder seen for the first time starts on. Both are stored on the server, so they apply at once
+folder; a folder seen for the first time starts off, so nothing is written into a folder until you tick it. Both are stored on the server, so they apply at once
 and survive a reinstall.
 
 A folder that lacks a listed skill gets a copy. Deleting a listed skill in any folder deletes it in every

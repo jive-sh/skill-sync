@@ -2,7 +2,7 @@
   "$schema": "./package.schema.json",
   "license": "MIT",
   "name": "@jive-sh/skill-sync",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "type": "module",
   "description": "Keeps one skills directory identical across every machine you work on.",
   "peerDependencies": {
@@ -13,7 +13,7 @@
     "@types/bun": "^1.3.14",
     "effect": "^4.0.0",
     "typescript": "^5.9.3",
-    "jive-abstract-library": "0.1.9"
+    "jive-abstract-library": "0.1.11"
   },
   "scripts": {
     "jive:cicd:get-config": "jive-library cicd get-config",

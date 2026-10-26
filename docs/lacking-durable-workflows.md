@@ -126,3 +126,15 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the abstract's dev server (`jive-backend-convex dev`) keeps `convex/_generated` current
   against the developer's own deployment, the way `convex dev` does, alongside `package.schema.json`.
 - **Belongs in:** jive-abstract-backend-convex's `dev` command.
+
+## Releasing a contract change through every dependent package
+- **By hand:** replacing the `jive:cicd:deploy:url` hook with `jive:cicd:deploy:plan` (2026-10-26) meant an
+  agent pushed jive-sh/jive's shared pipeline, released jive-abstract-library 0.2.0, waited for npm to serve it,
+  then bumped and released each package that depends on it, layer by layer: the other abstracts, then the
+  connector abstracts built on them, then skill-sync, ozy-cli and effective-modules. Every one of those pushes
+  failed sequencing until its own release landed, because the pipeline runs its actions from jive-sh/jive's
+  `main`.
+- **Should be:** a release that knows which Jive packages depend on the one just published, and opens or
+  pushes their dependency bump in dependency order once npm serves it.
+- **Belongs in:** `@jive-sh/jive` (the "topological release gating across packages" CONTEXT.md lists as its
+  direction), reading each package's dependencies on the others.

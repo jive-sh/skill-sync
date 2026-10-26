@@ -138,3 +138,13 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   pushes their dependency bump in dependency order once npm serves it.
 - **Belongs in:** `@jive-sh/jive` (the "topological release gating across packages" CONTEXT.md lists as its
   direction), reading each package's dependencies on the others.
+
+## Registering an organization, its code repository and its npm connection on @jive-sh/server
+- **By hand:** `packages.provision` serves only a repository registered to an organization that has connected an
+  npm account. Until the resources' own calls exist, a person runs `convex run seed:organizationWithRepository`
+  with the repository's GitHub ids, and `convex run connections:connectNpm` with the npm token and the
+  authenticator-app secret, against the deployment.
+- **Should be:** `organizations.create`, `codeRepositories.provision` (reading the ids through a GitHub
+  connection and setting up branch protection) and `connections.create` for npm, called by a signed-in person
+  (Jive API v1 design doc §3, §7, §8).
+- **Belongs in:** @jive-sh/server, with the person's sign-in through `jive.sh`.

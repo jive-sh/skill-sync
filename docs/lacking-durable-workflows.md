@@ -21,11 +21,13 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Belongs in:** the Jive CI/CD contract and shared pipeline (jive-sh/jive), as a list of machine types to
   test on. Needs Alex's approval: it changes the pipeline every Jive package shares.
 
-## Waiting for npm to serve a release
-- **By hand:** after CI publishes, an agent polls every platform tarball URL with curl until npm serves it,
-  before building a dependent on the new version.
-- **Should be:** the release pipeline finishes only once npm serves every platform tarball of the version.
-- **Belongs in:** jive-abstract-library's deployer.
+## Waiting for npm to serve a release's base package
+- **By hand:** a release now waits for its platform packages to download before publishing the base package
+  (jive-abstract-library 0.1.9), but not for the base package itself. Before installing jive-abstract-library
+  0.1.9 into skill-sync, an agent polled its tarball URL until npm served it, about 6 minutes after the publish.
+- **Should be:** the release finishes only once npm serves the base package too, so a dependent can install it
+  as soon as the pipeline is green.
+- **Belongs in:** jive-abstract-library's deploy code (the `jive:cicd:deploy` hook), after the base publish.
 
 ## First upgrade to a self-updating skill-sync
 - **By hand:** machines on skill-sync 0.4.4 or older must run `skill-sync upgrade` once; only 0.4.5 and later
@@ -96,14 +98,6 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the build runs each compiled command (`--version`) from a directory with no `node_modules`
   and the checkout path absent, and fails the build if it crashes, before anything publishes.
 - **Belongs in:** jive-abstract-library's builder, so every package built from it gets the check.
-
-## Auto-upgrade installs before npm serves the platform build
-- **By hand:** rose's daemon first tried to install 0.4.6 as soon as `latest-darwin-x64` named it, got a 404 for
-  `skill-sync-0.4.6-latest-darwin-x64.tgz`, and only succeeded on its next check 5 minutes later. An agent read
-  the log to learn why.
-- **Should be:** `autoUpgrade` checks that this platform's tarball downloads before installing, and retries
-  sooner than the 5-minute interval when the tag is ahead of the download.
-- **Belongs in:** jive-abstract-library's `autoUpgrade` (shared library, so a change for Alex to approve).
 
 ## Checking the live dashboard needs a passkey
 - **By hand:** after each service deploy, an agent can confirm sync from daemon logs and D1, but cannot see the

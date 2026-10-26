@@ -38,7 +38,8 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
   skills folders, and the skills in each with their files. A daemon older than the published version is
   marked "update pending"; it upgrades itself within 5 minutes.
 - **Accounts**, under each running computer: one line per Claude and Codex account on it, with how much of
-  each limit is used, when it resets, and when that reading was taken. See [Account usage](#account-usage).
+  each limit is used, when it resets, and when that reading was taken; for a Claude account without plan limits
+  (Amazon Bedrock, an API key), what its recent sessions cost at list price. See [Account usage](#account-usage).
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
@@ -77,12 +78,20 @@ only the numbers leave the machine:
   weekly limits, and usage credits spent when they are on.
 - **Codex**: the rate limits Codex recorded with its latest turn, in the account's session files under
   `sessions/`. Its 5-hour and weekly limits.
+- **Claude without plan limits** (Amazon Bedrock, an API key): Claude Code's own estimate of each session's cost
+  at list price, the total cost `/usage` shows for a session, which it saves in the session's file under
+  `projects/` when the session ends, is cleared, resumed or forked. The line sums the sessions last active in the
+  past 30 days (Claude Code deletes older session files by default) and is as of the newest one. A session still
+  running is not counted until it ends, and your provider's bill can differ from list price. The line says
+  Bedrock when the account's `settings.json` sets `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_MANTLE` in its
+  `env`, or its sessions used Bedrock model IDs (`us.anthropic.claude-…`, `anthropic.claude-…`, a Bedrock ARN).
+  An account with plan limits shows its limits, not this estimate, unless its settings turn Bedrock on.
 
 So a reading is as fresh as the tool's last use of that account, and the dashboard shows its age on every
 line. A limit whose reset time has passed since the reading shows no number, since the new window's use is not
 known yet. Neither file is a documented format: when a tool changes its format, the line says "usage unknown"
 and why, rather than showing a wrong number. Daemons before 0.4.9 send no usage, and their machines show no
-accounts.
+accounts; daemons before 0.4.11 send no estimate for accounts without plan limits.
 
 ## Configuration
 

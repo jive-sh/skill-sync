@@ -2,12 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeStatePath, detectAccounts, linesFromEnd, parseClaudeState, parseCodexLine, readUsage, type Reading } from "./usage";
+import {
+  CLAUDE_PERIOD_DAYS, claudeStatePath, detectAccounts, estimateSpend, isBedrockModelId, latestSessionCost, linesFromEnd, parseClaudeState,
+  parseCodexLine, readUsage, settingsUseBedrock, type Reading, type SessionCost,
+} from "./usage";
 
 /**
  * Pins how account folders are found and how each tool's usage record is read. The records below are
- * trimmed copies of real ones (account ids replaced): Claude Code 2.1.310's `cachedUsageUtilization`, and
- * a Codex `token_count` event. When a tool changes its format, these show what this version expected.
+ * trimmed copies of real ones (account ids replaced): Claude Code 2.1.310's `cachedUsageUtilization` and
+ * session-file `cost-state` line, and a Codex `token_count` event. When a tool changes its format, these show what this version expected.
  */
 
 const homes: string[] = [];
@@ -172,5 +175,155 @@ test("every account on a machine is read; Codex's latest reading may sit in an o
     { tool: "claude", home: ".claude-work", ...parseClaudeState(claudeState(claudeCache())) },
     { tool: "codex", home: ".codex", ...codexReading },
     { tool: "codex", home: ".codex-empty", state: "none" },
+  ]);
+});
+
+// ── Claude without plan limits ──────────────────────────────────────────────────────────────────────
+
+const DAY = 24 * 60 * 60 * 1000;
+const NOW = Date.parse("2026-10-26T18:00:00Z");
+
+const costState = (sessionId: string, totalCostUSD: number, models: ReadonlyArray<string> = ["claude-opus-5-5"], hasUnknownModelCost = false) => JSON.stringify({
+  type: "cost-state",
+  sessionId,
+  totalCostUSD,
+  totalAPIDuration: 116014,
+  totalAPIDurationWithoutRetries: 115938,
+  totalToolDuration: 25905,
+  totalLinesAdded: 0,
+  totalLinesRemoved: 0,
+  totalDuration: 5546949,
+  startTime: 1792959472233,
+  modelUsage: Object.fromEntries(models.map((model) => [model, {
+    inputTokens: 32, outputTokens: 5771, thinkingTokens: 1991, cacheReadInputTokens: 732663, cacheCreationInputTokens: 77977,
+    webSearchRequests: 0, costUSD: totalCostUSD / models.length,
+  }])),
+  hasUnknownModelCost,
+});
+const assistantAt = (timestamp: string) => JSON.stringify({
+  type: "assistant", timestamp, sessionId: "s", message: { role: "assistant", content: [{ type: "text", text: "a reply that mentions \"cost-state\"" }] },
+});
+/** The tail Claude Code leaves when a session ends: the last reply, the last prompt, the cost, then a queue entry. */
+const sessionFile = (sessionId: string, cost: number, lastReplyAt: string, models?: ReadonlyArray<string>) => [
+  assistantAt("2026-10-20T10:00:00.000Z"),
+  costState(sessionId, cost / 2, models),
+  assistantAt(lastReplyAt),
+  JSON.stringify({ type: "last-prompt", lastPrompt: "thanks" }),
+  costState(sessionId, cost, models),
+  JSON.stringify({ type: "queue-operation", operation: "dequeue", timestamp: "2026-10-26T17:59:00.000Z" }),
+].join("\n") + "\n";
+/** Writes a session file and dates it, as Claude Code's writes would have. */
+function writeSession(path: string, text: string, modifiedAt: number): void {
+  write(path, text);
+  utimesSync(path, new Date(modifiedAt), new Date(modifiedAt));
+}
+
+test("Bedrock is on when the account's settings env turns on Bedrock or Mantle", () => {
+  expect(settingsUseBedrock(JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_REGION: "us-east-1" } }))).toBe(true);
+  expect(settingsUseBedrock(JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "true" } }))).toBe(true);
+  expect(settingsUseBedrock(JSON.stringify({ env: { CLAUDE_CODE_USE_MANTLE: "1" } }))).toBe(true);
+  expect(settingsUseBedrock(JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "0" } }))).toBe(false);
+  expect(settingsUseBedrock(JSON.stringify({ theme: "dark" }))).toBe(false);
+  expect(settingsUseBedrock("{ not json")).toBe(false);
+});
+
+test("Bedrock model IDs are inference profiles, Mantle and foundation IDs, and ARNs; Anthropic API IDs are not", () => {
+  for (const id of [
+    "us.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-5-5", "us-gov.anthropic.claude-sonnet-4-6",
+    "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", "apac.anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-haiku-4-5",
+    "arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/opus-47-prod",
+    "arn:aws-us-gov:bedrock:us-gov-west-1:123456789012:inference-profile/x",
+  ]) expect([id, isBedrockModelId(id)]).toEqual([id, true]);
+  for (const id of ["claude-opus-5-5", "claude-opus-5[1m]", "claude-haiku-5-5", "openai.gpt-x"]) {
+    expect([id, isBedrockModelId(id)]).toEqual([id, false]);
+  }
+});
+
+test("a session's cost is its last saved one, as of the last line with a time before it", () => {
+  const home = makeHome();
+  const path = join(home, "s.jsonl");
+  writeSession(path, sessionFile("s1", 0.8943611, "2026-10-26T00:13:00.991Z"), NOW);
+  expect(latestSessionCost({ path, modifiedAt: NOW })).toEqual({
+    kind: "cost", sessionId: "s1", costUsd: 0.8943611, lastActiveAt: Date.parse("2026-10-26T00:13:00.991Z"), partial: false, models: ["claude-opus-5-5"],
+  });
+  // A session that never ended has no cost line yet; a reply quoting one is not one.
+  const running = join(home, "running.jsonl");
+  writeSession(running, `${assistantAt("2026-10-26T00:13:00.991Z")}\n`, NOW);
+  expect(latestSessionCost({ path: running, modifiedAt: NOW })).toEqual({ kind: "none" });
+  const changed = join(home, "changed.jsonl");
+  writeSession(changed, `${JSON.stringify({ type: "cost-state", sessionId: "s2", totalCostUSD: "$1" })}\n`, NOW);
+  expect(latestSessionCost({ path: changed, modifiedAt: NOW }).kind).toBe("changed");
+});
+
+const cost = (sessionId: string, costUsd: number, lastActiveAt: number, models: ReadonlyArray<string> = ["claude-opus-5-5"], partial = false): SessionCost =>
+  ({ kind: "cost", sessionId, costUsd, lastActiveAt, partial, models });
+
+test("spend sums each session once over the period, as of the newest, in cents", () => {
+  expect(estimateSpend({
+    sessions: [
+      cost("a", 1.005, NOW - 2 * DAY),
+      cost("b", 2.5, NOW - DAY),
+      cost("b", 2.0, NOW - 3 * DAY), // a copy of b saved earlier: the larger, later total wins
+      cost("old", 100, NOW - (CLAUDE_PERIOD_DAYS + 1) * DAY),
+      { kind: "none" },
+    ],
+    bedrockSetting: false,
+    now: NOW,
+  })).toEqual({
+    state: "estimate", asOf: NOW - DAY, periodDays: CLAUDE_PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
+    sessions: 2, partial: false, provider: null,
+  });
+  expect(estimateSpend({ sessions: [cost("old", 100, NOW - 40 * DAY), { kind: "none" }], bedrockSetting: false, now: NOW })).toEqual({ state: "none" });
+});
+
+test("spend is Bedrock by its settings or its model IDs, and partial when a model had no price", () => {
+  const read = (sessions: ReadonlyArray<SessionCost>, bedrockSetting: boolean) => {
+    const reading = estimateSpend({ sessions, bedrockSetting, now: NOW });
+    return reading.state === "estimate" ? { provider: reading.provider, partial: reading.partial } : reading.state;
+  };
+  expect(read([cost("a", 1, NOW)], true)).toEqual({ provider: "bedrock", partial: false });
+  expect(read([cost("a", 1, NOW, ["claude-opus-5-5"]), cost("b", 1, NOW, ["us.anthropic.claude-opus-5-5"])], false)).toEqual({ provider: "bedrock", partial: false });
+  expect(read([cost("a", 1, NOW, ["claude-opus-5-5"], true)], false)).toEqual({ provider: null, partial: true });
+  const changed = estimateSpend({ sessions: [cost("a", 1, NOW), latestChanged()], bedrockSetting: false, now: NOW });
+  expect(changed.state === "unknown" && changed.reason).toContain("Claude Code's session cost record changed shape");
+});
+function latestChanged(): SessionCost {
+  const home = makeHome();
+  const path = join(home, "changed.jsonl");
+  writeSession(path, `${JSON.stringify({ type: "cost-state", sessionId: "c", totalCostUSD: null })}\n`, NOW);
+  return latestSessionCost({ path, modifiedAt: NOW });
+}
+
+test("plan accounts keep their limits; accounts without a plan, or with Bedrock on, show their spend", () => {
+  const home = makeHome();
+  const session = (account: string, id: string, usd: number, models?: ReadonlyArray<string>, modifiedAt = NOW - DAY) =>
+    writeSession(join(home, account, "projects/-Users-x-repo", `${id}.jsonl`), sessionFile(id, usd, "2026-10-25T12:00:00.000Z", models), modifiedAt);
+
+  // fox's case: the default account, Bedrock set in its settings, no plan cache.
+  write(join(home, ".claude/settings.json"), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }));
+  write(join(home, ".claude.json"), JSON.stringify({ numStartups: 4 }));
+  session(".claude", "f1", 3.25);
+  session(".claude", "f2", 1.5);
+  session(".claude", "stale", 99, undefined, NOW - 45 * DAY);
+  // Bedrock set only in a shell: the model IDs say so.
+  session(".claude-shell", "s1", 0.75, ["us.anthropic.claude-opus-5-5"]);
+  // An API key: spend, provider unknown.
+  session(".claude-api", "a1", 2);
+  // A subscription: its limits, not its sessions' list-price cost.
+  write(join(home, ".claude-sub/.claude.json"), claudeState(claudeCache()));
+  session(".claude-sub", "p1", 40);
+  // Switched to Bedrock with an old plan cache left behind.
+  write(join(home, ".claude-switched/.claude.json"), claudeState(claudeCache()));
+  write(join(home, ".claude-switched/settings.json"), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }));
+
+  const asOf = Date.parse("2026-10-25T12:00:00.000Z");
+  const estimate = (usd: number, sessions: number, provider: "bedrock" | null): Reading =>
+    ({ state: "estimate", asOf, periodDays: CLAUDE_PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
+  expect(readUsage(home, NOW)).toEqual([
+    { tool: "claude", home: ".claude", ...estimate(4.75, 2, "bedrock") },
+    { tool: "claude", home: ".claude-api", ...estimate(2, 1, null) },
+    { tool: "claude", home: ".claude-shell", ...estimate(0.75, 1, "bedrock") },
+    { tool: "claude", home: ".claude-sub", ...parseClaudeState(claudeState(claudeCache())) },
+    { tool: "claude", home: ".claude-switched", state: "none" },
   ]);
 });

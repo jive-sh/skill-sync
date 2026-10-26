@@ -106,3 +106,21 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** a deploy check that reads the live hub's snapshot with a credential the pipeline holds (for
   example a read-only dashboard token), so a broken page fails the deploy instead of being found by Alex.
 - **Belongs in:** skill-sync-service's deploy step, once the service is on the Jive pipeline.
+
+## Minting the Convex team access token for a backend's pipeline
+- **By hand:** for jive-abstract-backend-convex, an agent called the Convex Management API's
+  `create_access_token` for team `jive` with this Mac's Convex CLI login, saved the token to
+  `~/.jive/convex-team-token.json` and set it as the repository secret `CONVEX_TEAM_ACCESS_TOKEN` with
+  `~/.jive/set-secret`. The token never expires and controls the whole team.
+- **Should be:** the credential custodian holds the team credential, and a pipeline proves who it is (GitHub's
+  OIDC token) to receive a deploy key for one deployment, so no repository holds a team-wide secret.
+- **Belongs in:** the central Jive server (`@jive-sh/server`) as the credential custodian, and the
+  `jive:cicd:deploy` hook in jive-abstract-backend-convex as its caller.
+
+## Regenerating a Convex backend's generated code
+- **By hand:** `convex codegen` refuses to run without a deployment ("No CONVEX_DEPLOYMENT set"), so to commit
+  `convex/_generated` for jive-abstract-backend-convex's test fixture an agent minted a deploy key and pushed
+  the fixture to a throwaway deployment.
+- **Should be:** the abstract's dev server (`jive-backend-convex dev`) keeps `convex/_generated` current
+  against the developer's own deployment, the way `convex dev` does, alongside `package.schema.json`.
+- **Belongs in:** jive-abstract-backend-convex's `dev` command.

@@ -89,15 +89,59 @@ export interface ListedSkill {
  */
 export const DAEMON_VERSION_HEADER = "x-skill-sync-version";
 
+/** One usage limit of an account: how much of it is used and when it starts over. */
+export interface UsageWindow {
+  /** How long the window is, in minutes (300 for five hours, 10080 for a week); null when the tool does not say. */
+  readonly minutes: number | null;
+  /** Percent of the limit used, from 0 to 100, as the tool last recorded it. */
+  readonly usedPercent: number;
+  /** When the window starts over, in milliseconds since the epoch; null when no window is running. */
+  readonly resetsAt: number | null;
+}
+
+/** Money as the tool records it: an amount in the currency's smallest unit, so 1234 with exponent 2 is 12.34. */
+export interface Money {
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly exponent: number;
+}
+
+/**
+ * What a daemon knows about one Claude or Codex account on its machine, read from files the tool itself
+ * writes. Never a credential: only these numbers leave the machine.
+ *
+ * `reading`: the tool's latest record, with the time it was taken (`asOf`); every number is as of then.
+ * `none`: the tool has not recorded usage for this account yet. `unknown`: the record exists but is in a
+ * shape this version cannot read, as when a new release of the tool changes it.
+ */
+export type AccountUsage = {
+  readonly tool: "claude" | "codex";
+  /** The account's folder in the home directory, such as `.claude-work` or `.codex`. */
+  readonly home: string;
+} & (
+  | {
+    readonly state: "reading";
+    readonly asOf: number;
+    readonly windows: ReadonlyArray<UsageWindow>;
+    /** Spent beyond the plan, when the account pays for usage past its limits; absent when it does not. */
+    readonly spent?: { readonly used: Money; readonly limit: Money | null };
+  }
+  | { readonly state: "none" }
+  | { readonly state: "unknown"; readonly reason: string }
+);
+
 /** Daemon → hub, over the daemon's WebSocket. */
-export type DaemonMessage = {
-  readonly type: "status";
-  readonly folder: string;
-  readonly state: FolderState;
-  readonly detail?: string;
-  /** A one-line summary of what the last cycle changed, when it changed anything. */
-  readonly activity?: string;
-};
+export type DaemonMessage =
+  | {
+    readonly type: "status";
+    readonly folder: string;
+    readonly state: FolderState;
+    readonly detail?: string;
+    /** A one-line summary of what the last cycle changed, when it changed anything. */
+    readonly activity?: string;
+  }
+  /** Every account on the machine, sent on connecting and whenever a number changes. Daemons before 0.4.9 never send it. */
+  | { readonly type: "usage"; readonly accounts: ReadonlyArray<AccountUsage> };
 
 /** Hub → daemon. `prefs` replaces what syncs; `changed` means another write landed on the server. */
 export type HubToDaemon =
@@ -132,6 +176,8 @@ export interface MachineView {
   readonly online: boolean;
   /** The version its connected daemon runs; null while offline, or when the daemon is too old to say. */
   readonly daemonVersion: string | null;
+  /** Each account's usage as its connected daemon last sent it; empty while offline, or from a daemon before 0.4.9. */
+  readonly accounts: ReadonlyArray<AccountUsage>;
   readonly lastSeen: number | null;
   readonly folders: ReadonlyArray<FolderView>;
 }

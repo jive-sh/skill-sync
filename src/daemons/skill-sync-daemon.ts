@@ -10,6 +10,7 @@ import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { describe, register } from "../internal/folders";
 import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
+import { readUsage } from "../internal/usage";
 import {
   DAEMON_VERSION_HEADER, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
 } from "../internal/wire";
@@ -32,6 +33,10 @@ import {
  * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
  * sign-in. Signing out, or the server rejecting the token, deletes the file.
  *
+ * Every minute it also reads how much of its limits each Claude and Codex account on the machine has used,
+ * from files those tools write themselves (`readUsage`), and sends the numbers over the same connection
+ * when they change, for the dashboard to show under this machine. No credential is read or sent.
+ *
  * It keeps itself on the latest published version (`autoUpgrade`): every 5 minutes it asks the package
  * manager that installed it whether a newer one is out, installs it the same way, and is restarted on it.
  */
@@ -45,6 +50,8 @@ const PING_MS = 30_000;
 const PONG_TIMEOUT_MS = 75_000;
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 5 * 60_000;
+/** Claude Code refreshes its usage cache about every five minutes; reading more often costs a file read. */
+const USAGE_READ_MS = 60_000;
 /** How long a sign-in waits for the browser before giving up. */
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
@@ -147,6 +154,8 @@ function connect(): void {
     // Whatever the hub last heard from a previous connection is stale until re-sent.
     reported.clear();
     for (const folder of prefs.keys()) report(folder, "idle");
+    reportedUsage = "";
+    reportUsage();
   };
   ws.onmessage = (event) => {
     const data = String(event.data);
@@ -189,6 +198,28 @@ function report(folder: string, state: FolderState, detail?: string, activity?: 
   socket.send(JSON.stringify(message));
   reported.set(folder, key);
 }
+
+/** The usage the hub last heard, so it is sent again only when a number changes. */
+let reportedUsage = "";
+
+/** Sends every account's usage to the hub when it differs from what was last sent. */
+function reportUsage(): void {
+  if (socket === undefined) return;
+  let message: DaemonMessage;
+  try {
+    message = { type: "usage", accounts: readUsage() };
+  } catch (cause) {
+    // Only an unreadable home directory gets here; each account's own failure is reported as `unknown`.
+    console.error(`could not read account usage: ${cause instanceof Error ? cause.message : String(cause)}`);
+    return;
+  }
+  const text = JSON.stringify(message);
+  if (text === reportedUsage) return;
+  socket.send(text);
+  reportedUsage = text;
+}
+
+setInterval(reportUsage, USAGE_READ_MS);
 
 // ── Sync cycles ─────────────────────────────────────────────────────────────────────────────────────
 

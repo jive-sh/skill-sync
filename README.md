@@ -37,6 +37,8 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 - **Computers**: each machine (renameable), whether its daemon is running and which version it runs, its
   skills folders, and the skills in each with their files. A daemon older than the published version is
   marked "update pending"; it upgrades itself within 5 minutes.
+- **Accounts**, under each running computer: one line per Claude and Codex account on it, with how much of
+  each limit is used, when it resets, and when that reading was taken. See [Account usage](#account-usage).
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
@@ -59,6 +61,28 @@ counts as an edit made when the daemon noticed it.
 
 Edit times come from each machine's clock, so a machine whose clock is far off can win or lose against
 edits it should not.
+
+## Account usage
+
+Every minute the daemon reads how much of its limits each account on the machine has used, and sends the
+numbers to the dashboard when they change. An account is a folder in your home directory: `~/.claude` and each
+`~/.claude-<name>` for Claude (each a `CLAUDE_CONFIG_DIR`), `~/.codex` and each `~/.codex-<name>` for Codex
+(each a `CODEX_HOME`).
+
+The numbers come only from files each tool writes for itself. No credential is read, nothing is fetched, and
+only the numbers leave the machine:
+
+- **Claude**: the plan usage Claude Code last fetched, which it keeps in the account's `.claude.json` (for
+  `~/.claude`, in `~/.claude.json`) and refreshes about every five minutes while a session runs. The 5-hour and
+  weekly limits, and usage credits spent when they are on.
+- **Codex**: the rate limits Codex recorded with its latest turn, in the account's session files under
+  `sessions/`. Its 5-hour and weekly limits.
+
+So a reading is as fresh as the tool's last use of that account, and the dashboard shows its age on every
+line. A limit whose reset time has passed since the reading shows no number, since the new window's use is not
+known yet. Neither file is a documented format: when a tool changes its format, the line says "usage unknown"
+and why, rather than showing a wrong number. Daemons before 0.4.9 send no usage, and their machines show no
+accounts.
 
 ## Configuration
 

@@ -76,9 +76,11 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **By hand:** the service behind skill-sync.jive.sh lives in `packages/@jive-sh/skill-sync-service` in the chaine
   checkout, outside git. An agent runs its end-to-end test (`test/e2e.ts`) against a local `wrangler dev`, then
   deploys with `wrangler deploy` from that checkout. It builds against a local `dist/base` of this package, not a
-  published version.
+  published version. The test checks the hub's data but not the page, so for 0.4.9's account usage an agent
+  connected a test daemon to the local service and screenshotted the dashboard in headless Chrome by hand.
 - **Should be:** the service in its own repo on the Jive pipeline, with the end-to-end test in its audit hook and
-  `wrangler deploy` as its deploy hook, depending on a published @jive-sh/skill-sync.
+  `wrangler deploy` as its deploy hook, depending on a published @jive-sh/skill-sync. The test drives the
+  dashboard in a headless browser and checks what it renders.
 - **Belongs in:** a new repo for the service, extending an app or service abstract once one exists.
 
 ## Cleaning up daemons registered from a build checkout

@@ -142,8 +142,8 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 ## Registering an organization, its code repository and its npm connection on @jive-sh/server
 - **By hand:** `packages.provision` serves only a repository registered to an organization that has connected an
   npm account. Until the resources' own calls exist, a person runs `convex run seed:organizationWithRepository`
-  with the repository's GitHub ids, and `convex run connections:connectNpm` with the npm token and the
-  authenticator-app secret, against the deployment.
+  with the repository's GitHub ids, and `bun run connect-npm` in @jive-sh/server, which prompts for the npm token
+  and the authenticator-app secret without echoing them, against the deployment.
 - **Should be:** `organizations.create`, `codeRepositories.provision` (reading the ids through a GitHub
   connection and setting up branch protection) and `connections.create` for npm, called by a signed-in person
   (Jive API v1 design doc §3, §7, §8).

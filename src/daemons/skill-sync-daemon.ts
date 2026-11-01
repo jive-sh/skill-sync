@@ -19,7 +19,7 @@ import {
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
  *
- * Folders are detected: the `skills` folder in each `~/.claude*` home and `~/.agents/skills`, read by Codex and Grok
+ * Folders are detected: the `skills` folder in each `~/.claude*` and `~/.grok*` home and Codex's `~/.agents/skills`
  * (see `detectFolders`). Which of them sync, and the one list of skills that syncs in all of them, are
  * held by the server and changed from the dashboard, so they survive a reinstall and apply the moment
  * they change. A skill not on the list is never pushed or pulled.

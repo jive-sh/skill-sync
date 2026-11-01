@@ -24,20 +24,20 @@ test("a skills folder's listing skips lock files and lock folders at any depth",
   }
 });
 
-test("agent homes are Claude's homes and ~/.agents, offered for Codex or Grok, never locks, files or look-alikes", () => {
+test("agent homes are Claude's and Grok's homes and Codex's ~/.agents, never locks, files or look-alikes", () => {
   const home = mkdtempSync(join(tmpdir(), "skill-sync-test-"));
   try {
-    for (const dir of [".claude", ".claude-work", ".claude-work.lock", ".grok-team", ".grokish", ".codexish", ".config"]) {
+    for (const dir of [".claude", ".claude-work", ".claude-work.lock", ".grok", ".grok-team", ".grokish", ".codex", ".codexish", ".config"]) {
       mkdirSync(join(home, dir));
     }
-    writeFileSync(join(home, ".codex"), "x");
+    writeFileSync(join(home, ".grok-file"), "x");
     expect(detectFolders(home)).toEqual([
       join(home, ".agents/skills"),
       join(home, ".claude-work/skills"),
       join(home, ".claude/skills"),
+      join(home, ".grok-team/skills"),
+      join(home, ".grok/skills"),
     ].sort());
-    rmSync(join(home, ".grok-team"), { recursive: true });
-    expect(detectFolders(home)).toEqual([join(home, ".claude-work/skills"), join(home, ".claude/skills")].sort());
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

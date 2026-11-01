@@ -40,8 +40,8 @@ export interface Settings {
    *
    * `synced` holds the skills Claude already pulls from the cloud itself. Syncing them here would mean
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
-   * The list applies to every detected folder, so in Codex's `~/.agents/skills` it keeps a skill named
-   * `synced` from syncing.
+   * The list applies to every detected folder, so in Codex's and Grok's skills folders it keeps a skill
+   * named `synced` from syncing.
    */
   readonly exclude: ReadonlyArray<string>;
   /** Names this machine on the server: on the dashboard, and as the machine each edit came from. */
@@ -146,22 +146,29 @@ function machineName(): string {
 }
 
 /**
- * The `skills` folder of every agent home on this machine: Claude's `~/.claude` and each
- * `~/.claude-<name>`, and Codex's `~/.agents/skills`, where Codex reads a user's skills. Codex counts when
- * either `~/.agents` or Codex's own home `~/.codex` exists, because a machine with Codex installed may
- * have no `~/.agents` yet.
+ * The `skills` folder of every agent home in `home`: Claude's `~/.claude` and each `~/.claude-<name>`
+ * (each a `CLAUDE_CONFIG_DIR`), Grok's `~/.grok` and each `~/.grok-<name>` (each a `GROK_HOME`, whose
+ * `skills` folder Grok reads as the user's skills), and Codex's `~/.agents/skills`, where Codex reads a
+ * user's skills. Codex counts when either `~/.agents` or Codex's own home `~/.codex` exists, because a
+ * machine with Codex installed may have no `~/.agents` yet.
  *
- * Every home is a candidate, whether or not it has a `skills` folder yet, so a Claude account added
- * later joins without anyone listing it. Which of them actually sync is the user's choice on the
- * dashboard; a folder that is synced and missing is created.
+ * Every home is a candidate, whether or not it has a `skills` folder yet, so an account added later
+ * joins without anyone listing it. Which of them actually sync is the user's choice on the dashboard; a
+ * folder that is synced and missing is created.
  */
-export function detectFolders(): string[] {
-  return [...new Set(readdirSync(homedir())
-    .filter((entry) => entry === ".claude" || entry.startsWith(".claude-") || entry === ".agents" || entry === ".codex")
+export function detectFolders(home: string = homedir()): string[] {
+  return [...new Set(readdirSync(home)
     .filter((entry) => !isLock(entry))
-    .filter((entry) => statSync(join(homedir(), entry)).isDirectory())
-    .map((entry) => join(homedir(), entry === ".codex" ? ".agents" : entry, "skills")))]
+    .filter((entry) => isAgentHome(entry))
+    .filter((entry) => statSync(join(home, entry)).isDirectory())
+    .map((entry) => join(home, entry === ".codex" ? ".agents" : entry, "skills")))]
     .sort();
+}
+
+function isAgentHome(entry: string): boolean {
+  return entry === ".claude" || entry.startsWith(".claude-")
+    || entry === ".grok" || entry.startsWith(".grok-")
+    || entry === ".agents" || entry === ".codex";
 }
 
 export function hashBytes(bytes: Uint8Array): string {

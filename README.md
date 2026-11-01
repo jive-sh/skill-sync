@@ -1,10 +1,11 @@
 # @jive-sh/skill-sync
 
-Keeps the skills you choose identical across every Claude and Codex skills folder on every machine you
-work on.
+Keeps the skills you choose identical across every Claude, Codex and Grok skills folder on every machine
+you work on.
 
-A daemon finds each agent home on the machine (Claude's `~/.claude` and every `~/.claude-<name>`, and
-Codex's `~/.agents`, counted as soon as either `~/.agents` or `~/.codex` exists; anything named `*.lock` is
+A daemon finds each agent home on the machine (Claude's `~/.claude` and every `~/.claude-<name>`, Grok's
+`~/.grok` and every `~/.grok-<name>` (each a `GROK_HOME`), and Codex's `~/.agents`, counted as soon as
+either `~/.agents` or `~/.codex` exists; anything named `*.lock` is
 another program's lock and is ignored, as a home and as a file or folder inside a skills folder) and syncs the `skills`
 folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
 `skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey (from any passkey

@@ -15,7 +15,7 @@ import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } fr
  */
 
 const program = new Command("skill-sync")
-  .description("keep the skills you choose identical across every Claude and Codex skills folder on every machine; choose them at https://skill-sync.jive.sh/");
+  .description("keep the skills you choose identical across every Claude, Codex and Grok skills folder on every machine; choose them at https://skill-sync.jive.sh/");
 
 program
   .command("login")

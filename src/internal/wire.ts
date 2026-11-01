@@ -70,6 +70,18 @@ export interface FoldersResponse {
   readonly folders: ReadonlyArray<FolderPrefs>;
 }
 
+/**
+ * Whether a name can be a skill's: lowercase letters and digits in hyphen-joined words, at most 64
+ * characters, which is what Claude, Codex and Grok accept as a skill name. The daemon checks it before
+ * asking, and the service again before writing, so both judge a name by this one rule.
+ */
+export const isSkillName = (name: string): boolean => name.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+
+/** `PUT /skills/<name>`: puts a skill on the synced list. `added` is false when it was already on it. */
+export interface AddSkillResponse {
+  readonly added: boolean;
+}
+
 /** `GET /skills`: the synced list, as `skill-sync list` shows it. Deleted skills are not on it. */
 export interface ListSkillsResponse {
   readonly skills: ReadonlyArray<ListedSkill>;

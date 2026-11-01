@@ -7,7 +7,7 @@ import type { ListedSkill } from "./wire";
  * The channel between the CLI and the running daemon.
  *
  * The daemon owns the sync token: it receives it from the browser and keeps it in `~/.jive/`, so it never
- * passes through the CLI. The CLI's `login`, `logout` and `list` are requests to the daemon over this
+ * passes through the CLI. The CLI's `login`, `logout`, `list` and `add` are requests to the daemon over this
  * channel. Messages are newline-delimited JSON; each request gets events until one that
  * ends it.
  */
@@ -16,7 +16,9 @@ export type ControlRequest =
   | { readonly type: "login" }
   | { readonly type: "logout" }
   /** The synced list, which the daemon fetches from the server with its token. */
-  | { readonly type: "list" };
+  | { readonly type: "list" }
+  /** Puts a skill on this machine on the synced list, after checking its files (`checkSkillToAdd`). */
+  | { readonly type: "add"; readonly skill: string };
 
 export type ControlEvent =
   /** Sign-in has started: the CLI opens this URL in the browser, where the passkey is verified. */
@@ -24,6 +26,17 @@ export type ControlEvent =
   | { readonly type: "signedIn"; readonly machine: string }
   | { readonly type: "signedOut"; readonly revoked: boolean }
   | { readonly type: "list"; readonly skills: ReadonlyArray<ListedSkill> }
+  /**
+   * The skill is on the synced list. `added` is false when it already was. `folders` are this machine's
+   * folders that hold it; `syncingFolders` are those ticked on the dashboard, which upload it.
+   */
+  | {
+    readonly type: "added";
+    readonly skill: string;
+    readonly added: boolean;
+    readonly folders: ReadonlyArray<string>;
+    readonly syncingFolders: ReadonlyArray<string>;
+  }
   | { readonly type: "error"; readonly message: string };
 
 const isFinal = (event: ControlEvent): boolean => event.type !== "open";

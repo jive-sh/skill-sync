@@ -7,9 +7,9 @@
  */
 
 export { invalidPathReason, isValidPath } from "./internal/path";
-export { DAEMON_VERSION_HEADER, skillOf } from "./internal/wire";
+export { DAEMON_VERSION_HEADER, isSkillName, skillOf } from "./internal/wire";
 export type {
-  AccountUsage, DaemonMessage, Money, UsageWindow, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
+  AccountUsage, AddSkillResponse, DaemonMessage, Money, UsageWindow, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
   HubToDaemon, ListedSkill, ListFilesResponse, ListSkillsResponse, LocalSkill, MachineView, PutFileRequest, RemoteFile,
   SkillView, Snapshot, SyncedSkill,
 } from "./internal/wire";

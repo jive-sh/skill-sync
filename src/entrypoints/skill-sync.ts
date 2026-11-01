@@ -6,11 +6,11 @@ import { name, version } from "../../package.json";
 import { DaemonUnreachable, request, type ControlEvent, type ControlRequest } from "../internal/control";
 
 /**
- * The CLI that accompanies the daemon: `login`, `logout`, `list`, `upgrade` and `version`, and nothing else — which
- * folders and skills sync is chosen on the dashboard.
+ * The CLI that accompanies the daemon: `login`, `logout`, `list`, `add`, `upgrade` and `version`. Which folders
+ * sync is chosen on the dashboard; skills are ticked there too, or added with `add` by the agent that wrote one.
  *
- * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout` and
- * `list` are requests to it over the control socket; the token goes from the browser straight to the daemon
+ * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout`, `list`
+ * and `add` are requests to it over the control socket; the token goes from the browser straight to the daemon
  * and never through here.
  */
 
@@ -61,6 +61,19 @@ program
         ? "no files yet"
         : `${skill.files} ${skill.files === 1 ? "file" : "files"}, last edited ${new Date(skill.editedAt).toLocaleString()} on ${skill.editedBy}`;
       console.log(`${skill.name.padEnd(width)}  ${detail}`);
+    }
+  });
+
+program
+  .command("add")
+  .argument("<skill>", "the skill's folder name, which must match the name in its SKILL.md")
+  .description("put a skill meant for every project on the synced list; it must be in a folder skill-sync syncs, with a valid SKILL.md. Repeating it changes nothing")
+  .action(async (skill: string) => {
+    const result = await withDaemon({ type: "add", skill }, () => undefined);
+    if (result.type !== "added") fail(result);
+    console.log(result.added ? `Added ${skill} to the synced list.` : `${skill} was already on the synced list.`);
+    if (result.syncingFolders.length === 0) {
+      console.log(`None of the folders holding it on this machine (${result.folders.join(", ")}) is ticked at https://skill-sync.jive.sh/, so its files upload once one is.`);
     }
   });
 

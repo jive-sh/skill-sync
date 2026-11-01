@@ -10,9 +10,10 @@ import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { describe, register } from "../internal/folders";
 import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
 import { isQuiet, syncOnce, type Report } from "../internal/sync";
+import { checkSkillToAdd } from "../internal/skill-check";
 import { readUsage } from "../internal/usage";
 import {
-  DAEMON_VERSION_HEADER, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
+  DAEMON_VERSION_HEADER, type AddSkillResponse, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
 } from "../internal/wire";
 
 /**
@@ -438,10 +439,45 @@ function list(reply: Reply): void {
     });
 }
 
+/**
+ * Puts a skill from this machine on the synced list, for an agent that has just written it. The files are
+ * checked here, where they are; the server only adds the name, and every daemon then syncs the skill.
+ */
+function add(skill: string, reply: Reply): void {
+  const config = session;
+  if (config === undefined) {
+    reply.send({ type: "error", message: "this machine is signed out; run `skill-sync login` first" });
+    return;
+  }
+  const check = checkSkillToAdd({ skill, folders: detectFolders(), exclude: config.exclude });
+  if (!check.ok) {
+    reply.send({ type: "error", message: check.reason });
+    return;
+  }
+  fetchServer(config, `/skills/${encodeURIComponent(skill)}`, { method: "PUT" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`PUT /skills/${skill}: ${response.status} ${await response.text()}`);
+      const { added } = await response.json() as AddSkillResponse;
+      reply.send({
+        type: "added", skill, added, folders: check.folders,
+        syncingFolders: check.folders.filter((folder) => prefs.has(folder)),
+      });
+    })
+    .catch((cause: unknown) => {
+      if (cause instanceof TokenRejected) {
+        dropRejectedToken(cause);
+        reply.send({ type: "error", message: "the server rejected this machine's token, so it is signed out; run `skill-sync login`" });
+        return;
+      }
+      reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` });
+    });
+}
+
 function handleControl(message: ControlRequest, reply: Reply): void {
   if (message.type === "login") login(reply);
   else if (message.type === "logout") void signOut().then((revoked) => reply.send({ type: "signedOut", revoked }));
   else if (message.type === "list") list(reply);
+  else if (message.type === "add") add(message.skill, reply);
   else reply.send({ type: "error", message: `unknown request ${JSON.stringify(message)}` });
 }
 

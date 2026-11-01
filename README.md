@@ -18,12 +18,30 @@ token.
 skill-sync login     sign this machine in with your passkey; the daemon starts syncing
 skill-sync logout    revoke this machine's token and stop syncing
 skill-sync list      list the skills that sync, as the server holds them (needs a sign-in)
+skill-sync add <skill>  put a skill on the synced list, as ticking it on the dashboard does
 skill-sync upgrade   upgrade with the package manager that installed it
 skill-sync version   print the installed version
 ```
 
-Everything else — which folders and skills sync, renaming computers — is on the
+Everything else — which folders sync, unticking skills, renaming computers — is on the
 dashboard.
+
+## Adding a skill from an agent
+
+An agent that writes a new skill meant for every project runs `skill-sync add <skill>` in the same step,
+so nobody has to tick it. `<skill>` is the skill's folder name. Running it again changes nothing. It is
+refused, with the reason, unless:
+
+- the skill is in a folder skill-sync detects (above). A skill in a project's own `.claude/skills`,
+  `.agents/skills` or `.grok/skills` is specific to that project and never syncs. That is the only sign of
+  a project-specific skill skill-sync can read; one written into a home folder but about one project is
+  not caught.
+- its `SKILL.md` starts with frontmatter whose `name` is the folder name and whose `description` is not
+  empty.
+- the name is lowercase letters and digits in hyphen-joined words, at most 64 characters.
+
+The skill's files upload from the folders holding it that are ticked on the dashboard; if none is, the
+command says so.
 
 The daemon registers itself to start at login when the package is installed. It also keeps skill-sync up
 to date: every 5 minutes it asks the package manager that installed it (bun, pnpm, yarn or npm, with that

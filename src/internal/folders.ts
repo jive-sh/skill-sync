@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { detectFolders, hashBytes, listLocalFiles, type Config } from "./config";
+import { detectFolders } from "./agents";
+import { hashBytes, listLocalFiles, type Config } from "./config";
 import { fetchServer } from "./server";
 import {
   skillOf, type FileHash, type FolderPrefs, type FoldersRequest, type FoldersResponse, type LocalSkill,

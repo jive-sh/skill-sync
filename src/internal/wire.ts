@@ -118,18 +118,27 @@ export interface Money {
   readonly exponent: number;
 }
 
+/** Tokens an account's sessions used over a period, as the tool counts them, cached input included. */
+export interface TokenSpend {
+  readonly count: number;
+  /** Sessions last active within this many days are counted. */
+  readonly periodDays: number;
+  readonly sessions: number;
+}
+
 /**
- * What a daemon knows about one Claude or Codex account on its machine, read from files the tool itself
- * writes. Never a credential: only these numbers leave the machine.
+ * What a daemon knows about one Claude, Codex or Grok account on its machine, read from files and commands
+ * the tool itself provides. Never a credential: only these numbers leave the machine.
  *
  * `reading`: the tool's latest record, with the time it was taken (`asOf`); every number is as of then.
- * `estimate`: a Claude account with no plan limits, such as one on Amazon Bedrock or an API key: what
- * Claude Code estimated its recent sessions cost at list price. `none`: the tool has not recorded usage for
+ * `estimate`: what an account's recent sessions cost by the tool's own count: for a Claude account with
+ * no plan limits (Amazon Bedrock, an API key), Claude Code's estimate at list price; for Grok, the cost
+ * `grok usage` reports. `none`: the tool has not recorded usage for
  * this account yet. `unknown`: the record exists but is in a shape this version cannot read, as when a new
  * release of the tool changes it.
  */
 export type AccountUsage = {
-  readonly tool: "claude" | "codex";
+  readonly tool: "claude" | "codex" | "grok";
   /** The account's folder in the home directory, such as `.claude-work` or `.codex`. */
   readonly home: string;
 } & (
@@ -139,6 +148,8 @@ export type AccountUsage = {
     readonly windows: ReadonlyArray<UsageWindow>;
     /** Spent beyond the plan, when the account pays for usage past its limits; absent when it does not. */
     readonly spent?: { readonly used: Money; readonly limit: Money | null };
+    /** Tokens used over a recent period, when the tool records them (Codex); absent otherwise. */
+    readonly tokens?: TokenSpend;
   }
   | {
     readonly state: "estimate";
@@ -147,8 +158,8 @@ export type AccountUsage = {
     /** Sessions last active within this many days before the reading are counted. */
     readonly periodDays: number;
     /**
-     * The sum of Claude Code's own estimate for each session, at list price. Claude Code saves a session's
-     * estimate when the session ends, is cleared, resumed or forked, so a session still running is not in it.
+     * The sum of the tool's own cost figure for each session. Claude Code saves a session's estimate, at
+     * list price, when the session ends, is cleared, resumed or forked, so a running session is not in it.
      */
     readonly spent: Money;
     readonly sessions: number;

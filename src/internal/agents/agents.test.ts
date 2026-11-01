@@ -1,16 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  CLAUDE_PERIOD_DAYS, claudeStatePath, detectAccounts, estimateSpend, isBedrockModelId, latestSessionCost, linesFromEnd, parseClaudeState,
-  parseCodexLine, readUsage, settingsUseBedrock, type Reading, type SessionCost,
-} from "./usage";
+import { PERIOD_DAYS, linesFromEnd, type Reading } from "./agent-tool";
+import { claude, claudeStatePath, estimateSpend, isBedrockModelId, latestSessionCost, parseClaudeState, settingsUseBedrock, type SessionCost } from "./claude";
+import { codex, parseCodexLine } from "./codex";
+import { grok, parseGrokUsage } from "./grok";
+import { readUsage } from ".";
 
 /**
  * Pins how account folders are found and how each tool's usage record is read. The records below are
  * trimmed copies of real ones (account ids replaced): Claude Code 2.1.310's `cachedUsageUtilization` and
- * session-file `cost-state` line, and a Codex `token_count` event. When a tool changes its format, these show what this version expected.
+ * session-file `cost-state` line, a Codex `token_count` event, and `grok usage` output from Grok 1.0.70. When a tool changes its format, these show what this version expected.
  */
 
 const homes: string[] = [];
@@ -75,19 +76,16 @@ const codexReading: Reading = {
   ],
 };
 
-test("account folders are .claude, .claude-*, .codex and .codex-* directories, never locks or files", () => {
+test("each tool's account folders are its .<tool> and .<tool>-* directories, never locks, files or look-alikes", () => {
   const home = makeHome();
-  for (const dir of [".claude", ".claude-work", ".claude-work.lock", ".codex", ".codex-team", ".codexish", ".agents", ".config"]) {
+  for (const dir of [".claude", ".claude-work", ".claude-work.lock", ".codex", ".codex-team", ".codexish", ".grok", ".grok-x", ".grokish", ".agents", ".config"]) {
     mkdirSync(join(home, dir));
   }
   write(join(home, ".claude.json"), "{}");
   write(join(home, ".claude-notes"), "a file, not an account");
-  expect(detectAccounts(home)).toEqual([
-    { tool: "claude", path: join(home, ".claude") },
-    { tool: "claude", path: join(home, ".claude-work") },
-    { tool: "codex", path: join(home, ".codex") },
-    { tool: "codex", path: join(home, ".codex-team") },
-  ]);
+  expect(claude.accounts(home)).toEqual([join(home, ".claude"), join(home, ".claude-work")]);
+  expect(codex.accounts(home)).toEqual([join(home, ".codex"), join(home, ".codex-team")]);
+  expect(grok.accounts(home)).toEqual([join(home, ".grok"), join(home, ".grok-x")]);
 });
 
 test("the default Claude account keeps its state beside its folder; others inside theirs", () => {
@@ -134,17 +132,40 @@ test("a Claude account that never fetched usage has none; a changed cache is unk
   expect(parseClaudeState("{\"cachedUsage").state).toBe("unknown");
 });
 
-test("a Codex token_count event reads as its primary and secondary windows, as of the event", () => {
-  expect(parseCodexLine(codexLine(codexLimits))).toEqual(codexReading);
+test("a Codex token_count event reads as its primary and secondary windows, as of the event, and the session's token total", () => {
+  expect(parseCodexLine(codexLine(codexLimits))).toEqual({ limits: codexReading, tokens: 288165427 });
 });
 
-test("Codex lines without a main-bucket reading are skipped; a changed record is unknown", () => {
+test("Codex lines without a main-bucket reading carry no limits; a changed record is unknown", () => {
   expect(parseCodexLine(JSON.stringify({ timestamp: "2026-09-05T19:40:38Z", type: "event_msg", payload: { type: "agent_message" } }))).toBeUndefined();
-  expect(parseCodexLine(codexLine(null))).toBeUndefined();
-  expect(parseCodexLine(codexLine({ ...codexLimits, limit_id: "codex_other" }))).toBeUndefined();
-  expect(parseCodexLine(codexLine({ ...codexLimits, limit_id: undefined }))).toEqual(codexReading);
-  expect(parseCodexLine(codexLine({ ...codexLimits, primary: { ...codexLimits.primary, used_percent: "24%" } }))?.state).toBe("unknown");
+  expect(parseCodexLine(codexLine(null))).toEqual({ limits: undefined, tokens: 288165427 });
+  expect(parseCodexLine(codexLine({ ...codexLimits, limit_id: "codex_other" }))?.limits).toBeUndefined();
+  expect(parseCodexLine(codexLine({ ...codexLimits, limit_id: undefined }))?.limits).toEqual(codexReading);
+  expect(parseCodexLine(codexLine({ ...codexLimits, primary: { ...codexLimits.primary, used_percent: "24%" } }))?.limits?.state).toBe("unknown");
   expect(parseCodexLine("{\"payload\":{\"type\":\"token_count\"")).toBeUndefined();
+});
+
+test("skills folders: each Claude and Grok account's own, and ~/.agents/skills for Codex", () => {
+  const home = makeHome();
+  for (const dir of [".claude-work", ".grok", ".codex"]) mkdirSync(join(home, dir));
+  expect(claude.skillsFolders(home)).toEqual([join(home, ".claude-work/skills")]);
+  expect(grok.skillsFolders(home)).toEqual([join(home, ".grok/skills")]);
+  expect(codex.skillsFolders(home)).toEqual([join(home, ".agents/skills")]);
+  rmSync(join(home, ".codex"), { recursive: true });
+  expect(codex.skillsFolders(home)).toEqual([]);
+  mkdirSync(join(home, ".agents"));
+  expect(codex.skillsFolders(home)).toEqual([join(home, ".agents/skills")]);
+});
+
+test("`grok usage` output reads as the session's cost in dollars; a changed shape is a failure, not a guess", () => {
+  const output = JSON.stringify({
+    sessionId: "01a19510-a3f3-7a92-9cc9-2d101601fc53",
+    updatedAt: "2026-11-01T05:26:28.177797+00:00",
+    session: { inputTokens: 1845685, outputTokens: 23693, totalTokens: 1869378, modelCalls: 26, costUsdTicks: 13671040000, turnCount: 10 },
+    turns: [],
+  });
+  expect(parseGrokUsage(output)).toEqual({ kind: "totals", usd: 1.367104, updatedAt: Date.parse("2026-11-01T05:26:28.177Z") });
+  expect(parseGrokUsage(JSON.stringify({ sessionId: "x", updatedAt: "2026-11-01T05:26:28Z", session: { costUsd: 1 } })).kind).toBe("failed");
 });
 
 test("lines come back last first, across chunk boundaries, skipping lines too long to hold", () => {
@@ -173,7 +194,7 @@ test("every account on a machine is read; Codex's latest reading may sit in an o
     { tool: "claude", home: ".claude", state: "none" },
     expect.objectContaining({ tool: "claude", home: ".claude-broken", state: "unknown" }),
     { tool: "claude", home: ".claude-work", ...parseClaudeState(claudeState(claudeCache())) },
-    { tool: "codex", home: ".codex", ...codexReading },
+    { tool: "codex", home: ".codex", ...codexReading, tokens: { count: 288165427, periodDays: PERIOD_DAYS, sessions: 1 } },
     { tool: "codex", home: ".codex-empty", state: "none" },
   ]);
 });
@@ -264,13 +285,13 @@ test("spend sums each session once over the period, as of the newest, in cents",
       cost("a", 1.005, NOW - 2 * DAY),
       cost("b", 2.5, NOW - DAY),
       cost("b", 2.0, NOW - 3 * DAY), // a copy of b saved earlier: the larger, later total wins
-      cost("old", 100, NOW - (CLAUDE_PERIOD_DAYS + 1) * DAY),
+      cost("old", 100, NOW - (PERIOD_DAYS + 1) * DAY),
       { kind: "none" },
     ],
     bedrockSetting: false,
     now: NOW,
   })).toEqual({
-    state: "estimate", asOf: NOW - DAY, periodDays: CLAUDE_PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
+    state: "estimate", asOf: NOW - DAY, periodDays: PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
     sessions: 2, partial: false, provider: null,
   });
   expect(estimateSpend({ sessions: [cost("old", 100, NOW - 40 * DAY), { kind: "none" }], bedrockSetting: false, now: NOW })).toEqual({ state: "none" });
@@ -318,7 +339,7 @@ test("plan accounts keep their limits; accounts without a plan, or with Bedrock 
 
   const asOf = Date.parse("2026-10-25T12:00:00.000Z");
   const estimate = (usd: number, sessions: number, provider: "bedrock" | null): Reading =>
-    ({ state: "estimate", asOf, periodDays: CLAUDE_PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
+    ({ state: "estimate", asOf, periodDays: PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
   expect(readUsage(home, NOW)).toEqual([
     { tool: "claude", home: ".claude", ...estimate(4.75, 2, "bedrock") },
     { tool: "claude", home: ".claude-api", ...estimate(2, 1, null) },
@@ -326,4 +347,35 @@ test("plan accounts keep their limits; accounts without a plan, or with Bedrock 
     { tool: "claude", home: ".claude-sub", ...parseClaudeState(claudeState(claudeCache())) },
     { tool: "claude", home: ".claude-switched", state: "none" },
   ]);
+});
+
+test("a Grok account sums `grok usage` over its recent sessions; a session with no turn yet is skipped, other failures are unknown", () => {
+  const home = makeHome();
+  const account = join(home, ".grok");
+  const sessions = join(account, "sessions/%2Fwork");
+  const used = "01a19510-a3f3-7a92-9cc9-2d101601fc53";
+  const empty = "01a19563-51bc-7170-8468-4694576a317b";
+  mkdirSync(join(sessions, used), { recursive: true });
+  mkdirSync(join(sessions, empty), { recursive: true });
+  // Stands in for Grok's command: what Grok 1.0.70 prints for a used session, and its error for an empty one.
+  write(join(account, "bin/grok"), `#!/bin/sh
+case "$2" in
+  ${used}) echo '{"sessionId":"${used}","updatedAt":"2026-11-01T05:26:28Z","session":{"totalTokens":5,"costUsdTicks":13671040000}}' ;;
+  ${empty}) echo "Error: No usage recorded for session '${empty}'." >&2; exit 1 ;;
+  *) echo "Error: boom" >&2; exit 1 ;;
+esac
+`);
+  chmodSync(join(account, "bin/grok"), 0o755);
+  expect(grok.readUsage(account, home, Date.now())).toEqual({
+    state: "estimate",
+    asOf: Date.parse("2026-11-01T05:26:28Z"),
+    periodDays: PERIOD_DAYS,
+    spent: { amountMinor: 137, currency: "USD", exponent: 2 },
+    sessions: 1,
+    partial: false,
+    provider: null,
+  });
+  mkdirSync(join(sessions, "01a19999-0000-7000-8000-000000000000"));
+  const failing = grok.readUsage(account, home, Date.now());
+  expect(failing.state === "unknown" && failing.reason).toContain("boom");
 });

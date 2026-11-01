@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { autoUpgrade, exitWhenUninstalled } from "jive-abstract-library";
 import { name, version } from "../../package.json";
 import {
-  TOKEN_PATH, deleteToken, detectFolders, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
+  TOKEN_PATH, deleteToken, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
   type Config,
 } from "../internal/config";
 import { serve, type ControlRequest, type Reply } from "../internal/control";
@@ -11,7 +11,7 @@ import { describe, register } from "../internal/folders";
 import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
 import { describeActivity, isQuiet, syncOnce, type Report } from "../internal/sync";
 import { checkSkillToAdd } from "../internal/skill-check";
-import { readUsage } from "../internal/usage";
+import { detectFolders, readUsage } from "../internal/agents";
 import {
   DAEMON_VERSION_HEADER, type AddSkillResponse, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
 } from "../internal/wire";
@@ -19,8 +19,7 @@ import {
 /**
  * Keeps every enabled skills folder on this machine identical to every other machine's.
  *
- * Folders are detected: the `skills` folder in each `~/.claude*` and `~/.grok*` home and Codex's `~/.agents/skills`
- * (see `detectFolders`). Which of them sync, and the one list of skills that syncs in all of them, are
+ * Folders are detected: the skills folders each agent tool reads (`AGENT_TOOLS`, `detectFolders`). Which of them sync, and the one list of skills that syncs in all of them, are
  * held by the server and changed from the dashboard, so they survive a reinstall and apply the moment
  * they change. A skill not on the list is never pushed or pulled.
  *
@@ -34,8 +33,8 @@ import {
  * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
  * sign-in. Signing out, or the server rejecting the token, deletes the file.
  *
- * Every minute it also reads how much of its limits each Claude and Codex account on the machine has used,
- * from files those tools write themselves (`readUsage`), and sends the numbers over the same connection
+ * Every minute it also reads how much each Claude, Codex and Grok account on the machine has used, from
+ * files and commands those tools provide (`readUsage`), and sends the numbers over the same connection
  * when they change, for the dashboard to show under this machine. No credential is read or sent.
  *
  * It keeps itself on the latest published version (`autoUpgrade`): every 5 minutes it asks the package

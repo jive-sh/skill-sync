@@ -145,34 +145,6 @@ function machineName(): string {
   return hostname().replace(/\.local$/, "").replace(/[^A-Za-z0-9-]+/g, "-") || "unknown";
 }
 
-/**
- * The `skills` folder of every agent home in `home`: Claude's `~/.claude` and each `~/.claude-<name>`
- * (each a `CLAUDE_CONFIG_DIR`), Grok's `~/.grok` and each `~/.grok-<name>` (each a `GROK_HOME`; Grok's
- * docs name `~/.grok/skills` as where it reads a user's skills), and Codex's `~/.agents/skills`, where
- * Codex reads a user's skills. Codex counts when either `~/.agents` or Codex's own home `~/.codex`
- * exists, because a machine with Codex installed may have no `~/.agents` yet.
- *
- * Grok also reads `~/.agents/skills`, undocumented; a skill in both folders loads once, from
- * `~/.grok/skills` (checked with `grok inspect`, Grok 1.0.70), so syncing both is harmless.
- *
- * Every home is a candidate, whether or not it has a `skills` folder yet, so an account added later
- * joins without anyone listing it. Which of them actually sync is the user's choice on the dashboard; a
- * folder that is synced and missing is created.
- */
-export function detectFolders(home: string = homedir()): string[] {
-  return [...new Set(readdirSync(home)
-    .filter((entry) => !isLock(entry))
-    .filter((entry) => statSync(join(home, entry)).isDirectory())
-    .flatMap((entry) => {
-      if (entry === ".claude" || entry.startsWith(".claude-") || entry === ".grok" || entry.startsWith(".grok-")) {
-        return [join(home, entry, "skills")];
-      }
-      if (entry === ".agents" || entry === ".codex") return [join(home, ".agents", "skills")];
-      return [];
-    }))]
-    .sort();
-}
-
 export function hashBytes(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }

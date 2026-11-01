@@ -56,9 +56,10 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 - **Computers**: each machine (renameable), whether its daemon is running and which version it runs, its
   skills folders, and the skills in each with their files. A daemon older than the published version is
   marked "update pending"; it upgrades itself within 5 minutes.
-- **Accounts**, under each running computer: one line per Claude and Codex account on it, with how much of
-  each limit is used, when it resets, and when that reading was taken; for a Claude account without plan limits
-  (Amazon Bedrock, an API key), what its recent sessions cost at list price. See [Account usage](#account-usage).
+- **Accounts**, under each running computer: one line per Claude, Codex and Grok account on it, with how much
+  of each limit is used, when it resets, and when that reading was taken; for Codex, the tokens its sessions
+  used in the last 30 days; for a Claude account without plan limits (Amazon Bedrock, an API key) and for
+  Grok, what its recent sessions cost. See [Account usage](#account-usage).
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
@@ -87,7 +88,7 @@ edits it should not.
 Every minute the daemon reads how much of its limits each account on the machine has used, and sends the
 numbers to the dashboard when they change. An account is a folder in your home directory: `~/.claude` and each
 `~/.claude-<name>` for Claude (each a `CLAUDE_CONFIG_DIR`), `~/.codex` and each `~/.codex-<name>` for Codex
-(each a `CODEX_HOME`).
+(each a `CODEX_HOME`), `~/.grok` and each `~/.grok-<name>` for Grok (each a `GROK_HOME`).
 
 The numbers come only from files each tool writes for itself. No credential is read, nothing is fetched, and
 only the numbers leave the machine:
@@ -96,7 +97,12 @@ only the numbers leave the machine:
   `~/.claude`, in `~/.claude.json`) and refreshes about every five minutes while a session runs. The 5-hour and
   weekly limits, and usage credits spent when they are on.
 - **Codex**: the rate limits Codex recorded with its latest turn, in the account's session files under
-  `sessions/`. Its 5-hour and weekly limits.
+  `sessions/`: its 5-hour and weekly limits. Also the tokens its sessions active in the last 30 days used,
+  cached input included, from the running total Codex records in the same files.
+- **Grok**: what `grok usage <session-id>` reports, the command Grok's docs give for a session's token and
+  cost totals, summed over sessions active in the last 30 days. Grok's plan allowance is only in its
+  interactive `/usage`, so no limit is shown. A session's totals include history it inherited by resume or
+  fork, so a fork counts that part twice.
 - **Claude without plan limits** (Amazon Bedrock, an API key): Claude Code's own estimate of each session's cost
   at list price, the total cost `/usage` shows for a session, which it saves in the session's file under
   `projects/` when the session ends, is cleared, resumed or forked. The line sums the sessions last active in the

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { detectFolders, isLock, listLocalFiles } from "./config";
+import { detectFolders } from "./agents";
+import { isLock, listLocalFiles } from "./config";
 
 test("lock names are recognised by their .lock suffix only", () => {
   expect(isLock(".claude-alex.lock")).toBe(true);

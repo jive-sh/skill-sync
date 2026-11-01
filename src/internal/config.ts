@@ -40,8 +40,8 @@ export interface Settings {
    *
    * `synced` holds the skills Claude already pulls from the cloud itself. Syncing them here would mean
    * two systems writing the same files, each undoing the other, and none of them are yours to edit.
-   * The list applies to every detected folder, so in Codex's and Grok's skills folders it keeps a skill
-   * named `synced` from syncing.
+   * The list applies to every detected folder, so in `~/.agents/skills`, which Codex and Grok read, it
+   * keeps a skill named `synced` from syncing.
    */
   readonly exclude: ReadonlyArray<string>;
   /** Names this machine on the server: on the dashboard, and as the machine each edit came from. */
@@ -147,10 +147,11 @@ function machineName(): string {
 
 /**
  * The `skills` folder of every agent home in `home`: Claude's `~/.claude` and each `~/.claude-<name>`
- * (each a `CLAUDE_CONFIG_DIR`), Grok's `~/.grok` and each `~/.grok-<name>` (each a `GROK_HOME`, whose
- * `skills` folder Grok reads as the user's skills), and Codex's `~/.agents/skills`, where Codex reads a
- * user's skills. Codex counts when either `~/.agents` or Codex's own home `~/.codex` exists, because a
- * machine with Codex installed may have no `~/.agents` yet.
+ * (each a `CLAUDE_CONFIG_DIR`), and `~/.agents/skills`, where both Codex and Grok read a user's skills.
+ * `~/.agents/skills` counts when `~/.agents`, Codex's home `~/.codex`, or a Grok home (`~/.grok` or a
+ * `~/.grok-<name>`, each a `GROK_HOME`) exists, because a machine with either installed may have no
+ * `~/.agents` yet. Grok also reads `$GROK_HOME/skills`, but syncing that too would give Grok every skill
+ * twice.
  *
  * Every home is a candidate, whether or not it has a `skills` folder yet, so an account added later
  * joins without anyone listing it. Which of them actually sync is the user's choice on the dashboard; a
@@ -159,16 +160,15 @@ function machineName(): string {
 export function detectFolders(home: string = homedir()): string[] {
   return [...new Set(readdirSync(home)
     .filter((entry) => !isLock(entry))
-    .filter((entry) => isAgentHome(entry))
     .filter((entry) => statSync(join(home, entry)).isDirectory())
-    .map((entry) => join(home, entry === ".codex" ? ".agents" : entry, "skills")))]
+    .flatMap((entry) => {
+      if (entry === ".claude" || entry.startsWith(".claude-")) return [join(home, entry, "skills")];
+      if (entry === ".agents" || entry === ".codex" || entry === ".grok" || entry.startsWith(".grok-")) {
+        return [join(home, ".agents", "skills")];
+      }
+      return [];
+    }))]
     .sort();
-}
-
-function isAgentHome(entry: string): boolean {
-  return entry === ".claude" || entry.startsWith(".claude-")
-    || entry === ".grok" || entry.startsWith(".grok-")
-    || entry === ".agents" || entry === ".codex";
 }
 
 export function hashBytes(bytes: Uint8Array): string {

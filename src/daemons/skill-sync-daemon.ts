@@ -9,7 +9,7 @@ import {
 import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { describe, register } from "../internal/folders";
 import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
-import { isQuiet, syncOnce, type Report } from "../internal/sync";
+import { describeActivity, isQuiet, syncOnce, type Report } from "../internal/sync";
 import { checkSkillToAdd } from "../internal/skill-check";
 import { readUsage } from "../internal/usage";
 import {
@@ -227,15 +227,6 @@ setInterval(reportUsage, USAGE_READ_MS);
 let running = false;
 let cycleQueued = false;
 
-function summarise(result: Report): string {
-  const parts = [
-    result.pulled.length > 0 ? `pulled ${result.pulled.join(", ")}` : "",
-    result.pushed.length > 0 ? `pushed ${result.pushed.join(", ")}` : "",
-    result.deletedLocally.length > 0 ? `deleted ${result.deletedLocally.join(", ")}` : "",
-  ];
-  return parts.filter(Boolean).join("; ");
-}
-
 async function runCycle(): Promise<void> {
   if (session === undefined) return;
   if (running) {
@@ -251,8 +242,8 @@ async function runCycle(): Promise<void> {
         const result = await syncOnce(current(), folder, stateFor(states, folder), skills);
         saveStates(states);
         log(folder, result);
-        if (result.rejected.length > 0) report(folder, "attention", result.rejected.join("; "), summarise(result) || undefined);
-        else report(folder, "idle", undefined, isQuiet(result) ? undefined : summarise(result));
+        if (result.rejected.length > 0) report(folder, "attention", result.rejected.join("; "), describeActivity(result) || undefined);
+        else report(folder, "idle", undefined, isQuiet(result) ? undefined : describeActivity(result));
         // What this folder pushed is pulled into the machine's other folders on the follow-up pass.
         if (result.pushed.length > 0) cycleQueued = true;
       } catch (cause) {

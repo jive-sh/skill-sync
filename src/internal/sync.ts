@@ -31,6 +31,26 @@ export function isQuiet(report: Report): boolean {
 }
 
 /**
+ * What a cycle changed, as the dashboard shows it under the folder: per direction, how many files in
+ * which skills ("pulled 64 files: agentic-collaboration 52, senior-swe 12"), never the file paths, which
+ * after a large pull fill the page. Empty when nothing changed.
+ */
+export function describeActivity(report: Report): string {
+  const direction = (verb: string, paths: ReadonlyArray<string>): string => {
+    if (paths.length === 0) return "";
+    const perSkill = new Map<string, number>();
+    for (const path of paths) perSkill.set(skillOf(path), (perSkill.get(skillOf(path)) ?? 0) + 1);
+    const skills = [...perSkill].sort(([a], [b]) => a.localeCompare(b)).map(([skill, files]) => `${skill} ${files}`);
+    return `${verb} ${paths.length} ${paths.length === 1 ? "file" : "files"}: ${skills.join(", ")}`;
+  };
+  return [
+    direction("pulled", report.pulled),
+    direction("pushed", report.pushed),
+    direction("deleted", report.deletedLocally),
+  ].filter(Boolean).join("; ");
+}
+
+/**
  * `skills` is the synced list. Every other skill in the folder is local to it: never pushed, never
  * overwritten, never deleted by a sync.
  */

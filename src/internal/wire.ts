@@ -103,9 +103,14 @@ export const DAEMON_VERSION_HEADER = "x-skill-sync-version";
 
 /** One usage limit of an account: how much of it is used and when it starts over. */
 export interface UsageWindow {
+  /**
+   * The limit's name, the same for every tool and machine so the dashboard gives each one a column:
+   * `5-hour`, `weekly`, or a limit on one model, such as `weekly Fable`.
+   */
+  readonly name: string;
   /** How long the window is, in minutes (300 for five hours, 10080 for a week); null when the tool does not say. */
   readonly minutes: number | null;
-  /** Percent of the limit used, from 0 to 100, as the tool last recorded it. */
+  /** Percent of the limit used, from 0 to 100. */
   readonly usedPercent: number;
   /** When the window starts over, in milliseconds since the epoch; null when no window is running. */
   readonly resetsAt: number | null;
@@ -118,49 +123,57 @@ export interface Money {
   readonly exponent: number;
 }
 
-/** Tokens an account's sessions used over a period, as the tool counts them, cached input included. */
-export interface TokenSpend {
-  readonly count: number;
-  /** Sessions last active within this many days are counted. */
-  readonly periodDays: number;
-  readonly sessions: number;
+/**
+ * Which account a tool is signed in to, as its own CLI reports it (`claude auth status`, Codex's
+ * `account/read`). The same account signed in on several machines has the same `id`, so the dashboard
+ * shows it once.
+ */
+export interface AccountIdentity {
+  /** Claude's organization id; Codex's email. */
+  readonly id: string;
+  /** The email the account is signed in with. */
+  readonly email: string;
+  /** The plan as the tool names it (`max`, `pro`); null when it does not say. */
+  readonly plan: string | null;
 }
 
 /**
- * What a daemon knows about one Claude, Codex or Grok account on its machine, read from files and commands
- * the tool itself provides. Never a credential: only these numbers leave the machine.
+ * The account's plan limits, which its provider counts across every machine it is used on.
  *
- * `reading`: the tool's latest record, with the time it was taken (`asOf`); every number is as of then.
- * `estimate`: what an account's recent sessions cost by the tool's own count: for a Claude account with
- * no plan limits (Amazon Bedrock, an API key), Claude Code's estimate at list price; for Grok, the cost
- * `grok usage` reports. `none`: the tool has not recorded usage for
- * this account yet. `unknown`: the record exists but is in a shape this version cannot read, as when a new
- * release of the tool changes it.
+ * `reading`: `asOf` is when they were read. `source` says from where: `account` when the tool's CLI fetched
+ * them from its service for this reading (`claude /usage`, Codex's `account/rateLimits/read`), `saved`
+ * when the CLI could not be run and they come from the tool's own record of its last fetch, which is as
+ * old as the tool's last use of the account. `none`: the account has no plan limits, or the tool offers
+ * no way to read them; `reason` says which. `unknown`: reading them failed; `reason` says why.
  */
-export type AccountUsage = {
-  readonly tool: "claude" | "codex" | "grok";
-  /** The account's folder in the home directory, such as `.claude-work` or `.codex`. */
-  readonly home: string;
-} & (
+export type AccountLimits =
   | {
     readonly state: "reading";
     readonly asOf: number;
+    readonly source: "account" | "saved";
+    /** With `saved`: why the CLI was not asked, or failed. */
+    readonly cliFailure?: string;
     readonly windows: ReadonlyArray<UsageWindow>;
     /** Spent beyond the plan, when the account pays for usage past its limits; absent when it does not. */
     readonly spent?: { readonly used: Money; readonly limit: Money | null };
-    /** Tokens used over a recent period, when the tool records them (Codex); absent otherwise. */
-    readonly tokens?: TokenSpend;
   }
+  | { readonly state: "none"; readonly reason: string }
+  | { readonly state: "unknown"; readonly reason: string };
+
+/**
+ * What this machine's sessions of the account used over the last `periodDays` days, read from the files
+ * the tool writes on this machine. Other machines' use of the same account is not in it.
+ *
+ * `spend`: the sum of the tool's own cost figure for each session: Claude Code's estimate at list price,
+ * which it saves when a session ends, is cleared, resumed or forked, so a running session counts as of
+ * its last save; Grok's, from `grok usage`. `tokens`: the tokens Codex counted, cached input included.
+ */
+export type LocalUse =
   | {
-    readonly state: "estimate";
-    /** When the newest session counted was last active; nothing later is in the sum. */
+    readonly state: "spend";
+    /** When the newest session counted was last active. */
     readonly asOf: number;
-    /** Sessions last active within this many days before the reading are counted. */
     readonly periodDays: number;
-    /**
-     * The sum of the tool's own cost figure for each session. Claude Code saves a session's estimate, at
-     * list price, when the session ends, is cleared, resumed or forked, so a running session is not in it.
-     */
     readonly spent: Money;
     readonly sessions: number;
     /** Claude Code could not price a model in at least one session, so the true cost is higher. */
@@ -168,9 +181,23 @@ export type AccountUsage = {
     /** `bedrock` when the account's settings or the model IDs its sessions used say so; null when nothing says. */
     readonly provider: "bedrock" | null;
   }
+  | { readonly state: "tokens"; readonly periodDays: number; readonly count: number; readonly sessions: number }
   | { readonly state: "none" }
-  | { readonly state: "unknown"; readonly reason: string }
-);
+  | { readonly state: "unknown"; readonly reason: string };
+
+/**
+ * One Claude, Codex or Grok account on a machine. Never a credential: the CLIs make the authenticated
+ * calls, and only these numbers and the account's email leave the machine.
+ */
+export interface AccountUsage {
+  readonly tool: "claude" | "codex" | "grok";
+  /** The account's folder in the home directory, such as `.claude-work` or `.codex`. */
+  readonly home: string;
+  /** Null when the tool is signed out, or cannot say who is signed in (Grok). */
+  readonly identity: AccountIdentity | null;
+  readonly limits: AccountLimits;
+  readonly local: LocalUse;
+}
 
 /** Daemon → hub, over the daemon's WebSocket. */
 export type DaemonMessage =
@@ -182,7 +209,7 @@ export type DaemonMessage =
     /** A one-line summary of what the last cycle changed, when it changed anything. */
     readonly activity?: string;
   }
-  /** Every account on the machine, sent on connecting and whenever a number changes. Daemons before 0.4.9 never send it. */
+  /** Every account on the machine, sent on connecting and whenever a number changes. The hub drops entries in the shape daemons before 0.5.0 sent. */
   | { readonly type: "usage"; readonly accounts: ReadonlyArray<AccountUsage> };
 
 /** Hub → daemon. `prefs` replaces what syncs; `changed` means another write landed on the server. */
@@ -218,7 +245,7 @@ export interface MachineView {
   readonly online: boolean;
   /** The version its connected daemon runs; null while offline, or when the daemon is too old to say. */
   readonly daemonVersion: string | null;
-  /** Each account's usage as its connected daemon last sent it; empty while offline, or from a daemon before 0.4.9. */
+  /** Each account's usage as its connected daemon last sent it; empty while offline, or from a daemon before 0.5.0. */
   readonly accounts: ReadonlyArray<AccountUsage>;
   readonly lastSeen: number | null;
   readonly folders: ReadonlyArray<FolderView>;

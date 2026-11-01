@@ -2,7 +2,7 @@ import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { SchemaIssue } from "effect";
 import { isLock } from "../config";
-import type { AccountUsage } from "../wire";
+import type { AccountIdentity, AccountLimits, AccountUsage, LocalUse } from "../wire";
 
 /**
  * One coding agent skill-sync works with (Claude Code, Codex, Grok): where it reads a user's skills, which
@@ -20,23 +20,50 @@ export interface AgentTool {
   skillsFolders(home: string): string[];
   /** This tool's account folders in `home`, as absolute paths. */
   accounts(home: string): string[];
-  /** How much one of those accounts has used, from files and commands the tool itself provides. */
-  readUsage(account: string, home: string, now: number): Reading;
+  /**
+   * Who the account is and its plan limits, asked of the tool's own CLI, which makes the authenticated
+   * call to its service; from the tool's saved record of its last fetch when the CLI cannot be run. Each
+   * call runs the CLI, so callers cache the result (`readUsage`).
+   */
+  readAccount(account: string, context: AccountContext): Promise<AccountReading>;
+  /** What this machine's sessions of the account used, from the files the tool writes for itself. */
+  readLocalUse(account: string, home: string, now: number): LocalUse;
 }
 
-/** What a tool learns about one account; `readUsage` adds which account it is. */
-export type Reading = DistributiveOmit<AccountUsage, "tool" | "home">;
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+/** What reading an account needs: the home it is in, the time, and where a CLI is (`findCommand` outside tests). */
+export interface AccountContext {
+  readonly home: string;
+  readonly now: number;
+  /** The path of a command, or undefined when it is not installed; `also` lists paths to try after the usual ones. */
+  readonly findCommand: (input: { readonly name: string; readonly also?: ReadonlyArray<string> }) => string | undefined;
+}
+
+/** What a tool's CLI says about one account. */
+export interface AccountReading {
+  readonly identity: AccountIdentity | null;
+  readonly limits: AccountLimits;
+}
 
 /** Sessions are counted over this many days: Claude Code deletes session files older than 30 days by default. */
 export const PERIOD_DAYS = 30;
 export const DAY_MS = 24 * 60 * 60 * 1000;
+/** A CLI asked for an account's limits gets this long to answer. */
+export const CLI_TIMEOUT_MS = 30_000;
 
 const formatIssue = SchemaIssue.makeFormatterDefault();
 
 /** A record that failed to decode: what failed, on one line, so the dashboard can say why it shows nothing. */
-export const unknownShape = (what: string, issue: SchemaIssue.Issue): Reading =>
+export const unknownShape = (what: string, issue: SchemaIssue.Issue): { readonly state: "unknown"; readonly reason: string } =>
   ({ state: "unknown", reason: `${what} changed shape: ${formatIssue(issue).replace(/\s+/g, " ").slice(0, 160)}` });
+
+/** A limit's name from its length, the same for every tool: `5-hour`, `weekly`. */
+export const windowName = (minutes: number | null): string =>
+  minutes === null ? "limit"
+    : minutes === 7 * 24 * 60 ? "weekly"
+    : minutes === 24 * 60 ? "daily"
+    : minutes % (24 * 60) === 0 ? `${minutes / (24 * 60)}-day`
+    : minutes % 60 === 0 ? `${minutes / 60}-hour`
+    : `${minutes}-minute`;
 
 export function isDirectory(path: string): boolean {
   try {

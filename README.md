@@ -52,14 +52,14 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 
 `https://skill-sync.jive.sh/` shows, live, the latest version published on npm, and:
 
+- **Accounts**: a table with one row per Claude, Codex and Grok account on the running computers.
+  An account its tool can name (Claude's organization, Codex's email) is one row however many computers use
+  it. Each limit gets a column with the share used and the time to its reset; then each computer's own use of
+  the account over the last 30 days, and when the limits were read. See [Account usage](#account-usage).
 - **Synced skills**: the list, with the shared version of each skill and where it was last edited.
 - **Computers**: each machine (renameable), whether its daemon is running and which version it runs, its
   skills folders, and the skills in each with their files. A daemon older than the published version is
   marked "update pending"; it upgrades itself within 5 minutes.
-- **Accounts**, under each running computer: one line per Claude, Codex and Grok account on it, with how much
-  of each limit is used, when it resets, and when that reading was taken; for Codex, the tokens its sessions
-  used in the last 30 days; for a Claude account without plan limits (Amazon Bedrock, an API key) and for
-  Grok, what its recent sessions cost. See [Account usage](#account-usage).
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
@@ -85,38 +85,49 @@ edits it should not.
 
 ## Account usage
 
-Every minute the daemon reads how much of its limits each account on the machine has used, and sends the
-numbers to the dashboard when they change. An account is a folder in your home directory: `~/.claude` and each
-`~/.claude-<name>` for Claude (each a `CLAUDE_CONFIG_DIR`), `~/.codex` and each `~/.codex-<name>` for Codex
-(each a `CODEX_HOME`), `~/.grok` and each `~/.grok-<name>` for Grok (each a `GROK_HOME`).
+An account is a folder in your home directory: `~/.claude` and each `~/.claude-<name>` for Claude (each a
+`CLAUDE_CONFIG_DIR`), `~/.codex` and each `~/.codex-<name>` for Codex (each a `CODEX_HOME`), `~/.grok` and each
+`~/.grok-<name>` for Grok (each a `GROK_HOME`). The daemon reads two things about each, and sends them to the
+dashboard when they change.
 
-The numbers come only from files each tool writes for itself. No credential is read, nothing is fetched, and
-only the numbers leave the machine:
+**The account's limits**, which its provider counts across every computer. The daemon asks the tool's own CLI,
+at most every five minutes per account. The CLI is signed in to the account and makes the call; skill-sync
+reads no credential file, and only the numbers and the account's email leave the machine.
 
-- **Claude**: the plan usage Claude Code last fetched, which it keeps in the account's `.claude.json` (for
-  `~/.claude`, in `~/.claude.json`) and refreshes about every five minutes while a session runs. The 5-hour and
-  weekly limits, and usage credits spent when they are on.
-- **Codex**: the rate limits Codex recorded with its latest turn, in the account's session files under
-  `sessions/`: its 5-hour and weekly limits. Also the tokens its sessions active in the last 30 days used,
-  cached input included, from the running total Codex records in the same files.
-- **Grok**: what `grok usage <session-id>` reports, the command Grok's docs give for a session's token and
-  cost totals, summed over sessions active in the last 30 days. Grok's plan allowance is only in its
-  interactive `/usage`, so no limit is shown. A session's totals include history it inherited by resume or
-  fork, so a fork counts that part twice.
-- **Claude without plan limits** (Amazon Bedrock, an API key): Claude Code's own estimate of each session's cost
-  at list price, the total cost `/usage` shows for a session, which it saves in the session's file under
-  `projects/` when the session ends, is cleared, resumed or forked. The line sums the sessions last active in the
-  past 30 days (Claude Code deletes older session files by default) and is as of the newest one. A session still
-  running is not counted until it ends, and your provider's bill can differ from list price. The line says
-  Bedrock when the account's `settings.json` sets `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_MANTLE` in its
-  `env`, or its sessions used Bedrock model IDs (`us.anthropic.claude-…`, `anthropic.claude-…`, a Bedrock ARN).
-  An account with plan limits shows its limits, not this estimate, unless its settings turn Bedrock on.
+- **Claude**: `claude auth status` (who is signed in) and `claude -p /usage --no-session-persistence` (the
+  session, weekly and per-model weekly limits). Neither starts a model turn, and the second saves no session.
+  Usage credits spent beyond the plan are not in `/usage`'s output, so they show only when the CLI could not be
+  asked (below).
+- **Codex**: `codex app-server`, the JSON-RPC interface Codex's editors and desktop app use: `account/read` and
+  `account/rateLimits/read`.
+- **Grok**: none. Grok's allowance is only in its interactive `/usage`, and it has no command that says who is
+  signed in.
 
-So a reading is as fresh as the tool's last use of that account, and the dashboard shows its age on every
-line. A limit whose reset time has passed since the reading shows no number, since the new window's use is not
-known yet. Neither file is a documented format: when a tool changes its format, the line says "usage unknown"
-and why, rather than showing a wrong number. Daemons before 0.4.9 send no usage, and their machines show no
-accounts; daemons before 0.4.11 send no estimate for accounts without plan limits.
+The daemon runs with the service manager's PATH, not your shell's, so it looks for `claude` and `codex` on PATH,
+then in the folders installers put them in (`~/.local/bin`, `~/.bun/bin`, npm's and nvm's global folders,
+Homebrew's), then, for Codex, inside the ChatGPT and Codex desktop apps, which ship one. When a CLI is not found
+or fails, the limits are what the tool last recorded on this machine, and the dashboard's hover on their age
+says so and why: for Claude, the plan usage it keeps in the account's `.claude.json`; for Codex, the limits it
+recorded with its latest turn in its session files. Those are as old as the tool's last use of the account. An
+account using Amazon Bedrock or an API key has no plan limits.
+
+**This machine's use** of the account over the last 30 days, from the files the tool writes:
+
+- **Claude**: Claude Code's own estimate of each session's cost at list price, which it saves in the session's
+  file under `projects/` when the session ends, is cleared, resumed or forked, summed over sessions active in
+  the period (Claude Code deletes older session files by default). A running session counts as of its last
+  save, and your provider's bill can differ from list price. The row says Bedrock when the account's
+  `settings.json` sets `CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_MANTLE` in its `env`, or its sessions used
+  Bedrock model IDs.
+- **Codex**: the tokens its sessions active in the period used, cached input included, from the running total
+  Codex records in its session files.
+- **Grok**: what `grok usage <session-id>` reports, summed over sessions active in the period. A session's
+  totals include history it inherited by resume or fork, so a fork counts that part twice.
+
+A limit whose reset time has passed since the reading shows no number, since the new window's use is not known
+yet. None of these outputs is a published format: when a tool changes one, the row says "unknown" and why,
+rather than showing a wrong number. Daemons before 0.5.0 send usage in a shape the dashboard no longer takes,
+so their accounts are not shown until they upgrade themselves.
 
 ## Configuration
 

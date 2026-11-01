@@ -1,9 +1,12 @@
+import { spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Result, Schema } from "effect";
-import type { TokenSpend } from "../wire";
+import type { AccountLimits, LocalUse, UsageWindow } from "../wire";
 import {
-  DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, linesFromEnd, parseJson, unknownShape, type AgentTool, type Reading,
+  CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
+  type AccountContext, type AccountReading, type AgentTool,
 } from "./agent-tool";
 
 /**
@@ -11,18 +14,170 @@ import {
  * skills from `~/.agents/skills`, offered when any Codex account or `~/.agents` exists, because a
  * machine with Codex installed may have no `~/.agents` yet.
  *
- * Codex records what its backend reports with every turn, as a `token_count` event in that turn's session
- * file under `sessions/`: the rate limits (Codex's `RateLimitSnapshot`, codex-rs/protocol/src/protocol.rs)
- * and the session's running token total. The limits come from the newest event; the tokens are each
- * session's total, summed over sessions active in the last `PERIOD_DAYS` days.
+ * - Account: `codex app-server` speaks JSON-RPC over stdio, the protocol Codex's own editors and desktop
+ *   app use (openai/codex, codex-rs/app-server-protocol). `account/read` says who is signed in and
+ *   `account/rateLimits/read` fetches the account's limits from OpenAI. The `codex` binary is looked for
+ *   on PATH, in the folders npm, bun and Homebrew install to, and inside the ChatGPT and Codex desktop
+ *   apps, which ship one. Without one, the limits are the ones Codex recorded with its latest turn, as a
+ *   `token_count` event in that turn's session file under `sessions/` (Codex's `RateLimitSnapshot`,
+ *   codex-rs/protocol/src/protocol.rs).
+ * - This machine: each session's running token total, from the same events, summed over sessions active
+ *   in the last `PERIOD_DAYS` days.
  */
 export const codex: AgentTool = {
   tool: "codex",
   skillsFolders: (home) =>
     homesNamed(home, "codex").length > 0 || isDirectory(join(home, ".agents")) ? [join(home, ".agents", "skills")] : [],
   accounts: (home) => homesNamed(home, "codex"),
-  readUsage: (account, _home, now) => readCodex(account, now),
+  readAccount: (account, context) => readCodexAccount(account, context),
+  readLocalUse: (account, _home, now) => localTokens(account, now),
 };
+
+// ── The account ─────────────────────────────────────────────────────────────────────────────────────
+
+/** The desktop apps that ship a `codex` binary, on macOS. */
+const appBundles = (home: string): string[] => ["/Applications", join(home, "Applications")]
+  .flatMap((folder) => ["ChatGPT.app", "Codex.app"].map((app) => join(folder, app, "Contents", "Resources", "codex")));
+
+async function readCodexAccount(account: string, { home, now, findCommand }: AccountContext): Promise<AccountReading> {
+  const command = findCommand({ name: "codex", also: appBundles(home) });
+  if (command === undefined) return { identity: null, limits: savedLimits(account, "`codex` was not found") };
+  const answers = await askAppServer({ command, account });
+  if (answers.kind === "failed") return { identity: null, limits: savedLimits(account, answers.reason) };
+  return parseAppServerAnswers({ account: answers.account, rateLimits: answers.rateLimits, now });
+}
+
+/** One JSON-RPC response: `result` on success, `error` otherwise. */
+const RpcResponse = Schema.Struct({
+  id: Schema.Finite,
+  result: Schema.optionalKey(Schema.Unknown),
+  error: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
+});
+type RpcResponse = Schema.Schema.Type<typeof RpcResponse>;
+
+const REQUEST_ACCOUNT = 2;
+const REQUEST_RATE_LIMITS = 3;
+
+/**
+ * Starts `codex app-server` for the account, initializes the connection as the protocol requires, asks
+ * for the account and its rate limits, and stops it once both answers are in. `account/rateLimits/read`
+ * is sent without params: older versions refuse any (`invalid type: map, expected unit`).
+ */
+function askAppServer(input: { readonly command: string; readonly account: string }): Promise<
+  | { readonly kind: "answered"; readonly account: RpcResponse; readonly rateLimits: RpcResponse }
+  | { readonly kind: "failed"; readonly reason: string }
+> {
+  return new Promise((resolve) => {
+    const child = spawn(input.command, ["app-server"], {
+      env: { ...process.env, CODEX_HOME: input.account },
+      cwd: tmpdir(),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const answers = new Map<number, RpcResponse>();
+    let stderr = "";
+    let pending = "";
+    let settled = false;
+    const settle = (outcome: Parameters<typeof resolve>[0]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => settle({ kind: "failed", reason: `\`codex app-server\` did not answer within ${CLI_TIMEOUT_MS / 1000} s` }), CLI_TIMEOUT_MS);
+    child.on("error", (error) => settle({ kind: "failed", reason: `\`codex app-server\` could not start: ${error.message}` }));
+    child.on("close", (status) => settle({
+      kind: "failed",
+      reason: `\`codex app-server\` exited (${status}) before answering: ${stderr.trim().slice(0, 160)}`,
+    }));
+    child.stderr.setEncoding("utf-8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.stdout.setEncoding("utf-8").on("data", (chunk: string) => {
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        // Notifications (`account/updated`, `remoteControl/status/changed`) arrive between responses; only responses have an id.
+        const response = Schema.decodeUnknownOption(RpcResponse)(parseJson(line));
+        if (response._tag === "Some") answers.set(response.value.id, response.value);
+      }
+      const initialized = answers.get(1);
+      if (initialized?.error !== undefined) {
+        settle({ kind: "failed", reason: `\`codex app-server\` refused to initialize: ${initialized.error.message.slice(0, 160)}` });
+        return;
+      }
+      const account = answers.get(REQUEST_ACCOUNT);
+      const rateLimits = answers.get(REQUEST_RATE_LIMITS);
+      if (account !== undefined && rateLimits !== undefined) settle({ kind: "answered", account, rateLimits });
+    });
+    // A dead stdin raises EPIPE here; the `close` above reports why the server went.
+    child.stdin.on("error", () => {});
+    child.stdin.write([
+      { id: 1, method: "initialize", params: { clientInfo: { name: "skill-sync", title: null, version: "1" }, capabilities: null } },
+      { method: "initialized" },
+      { id: REQUEST_ACCOUNT, method: "account/read", params: {} },
+      { id: REQUEST_RATE_LIMITS, method: "account/rateLimits/read" },
+    ].map((message) => JSON.stringify(message) + "\n").join(""));
+  });
+}
+
+/** `account/read`'s answer (codex-rs/app-server-protocol/schema/typescript/v2/GetAccountResponse.ts). */
+const AccountResponse = Schema.Struct({
+  account: Schema.NullOr(Schema.Struct({
+    type: Schema.String,
+    email: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    planType: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  })),
+});
+const AppServerWindow = Schema.Struct({
+  usedPercent: Schema.Finite,
+  windowDurationMins: Schema.NullOr(Schema.Finite),
+  resetsAt: Schema.NullOr(Schema.Finite),
+});
+const AppServerSnapshot = Schema.Struct({ primary: Schema.NullOr(AppServerWindow), secondary: Schema.NullOr(AppServerWindow) });
+/** `account/rateLimits/read`'s answer (GetAccountRateLimitsResponse.ts): the main bucket is `codex`. */
+const RateLimitsResponse = Schema.Struct({
+  rateLimits: AppServerSnapshot,
+  rateLimitsByLimitId: Schema.optionalKey(Schema.NullOr(Schema.Record(Schema.String, AppServerSnapshot))),
+});
+
+/** The account and its limits from the two answers `codex app-server` gave. */
+export function parseAppServerAnswers(input: { readonly account: RpcResponse; readonly rateLimits: RpcResponse; readonly now: number }): AccountReading {
+  if (input.account.error !== undefined) {
+    return { identity: null, limits: { state: "unknown", reason: `\`account/read\` failed: ${input.account.error.message.slice(0, 160)}` } };
+  }
+  const decodedAccount = Schema.decodeUnknownResult(AccountResponse)(input.account.result);
+  if (Result.isFailure(decodedAccount)) return { identity: null, limits: unknownShape("Codex's `account/read` answer", decodedAccount.failure.issue) };
+  const signedIn = decodedAccount.success.account;
+  if (signedIn === null) return { identity: null, limits: { state: "none", reason: "signed out" } };
+  if (signedIn.type !== "chatgpt" || typeof signedIn.email !== "string") {
+    return { identity: null, limits: { state: "none", reason: `signed in with ${signedIn.type}: no plan limits` } };
+  }
+  const plan = signedIn.planType;
+  const identity = { id: signedIn.email, email: signedIn.email, plan: typeof plan === "string" && plan !== "unknown" ? plan : null };
+
+  if (input.rateLimits.error !== undefined) {
+    return { identity, limits: { state: "unknown", reason: `\`account/rateLimits/read\` failed: ${input.rateLimits.error.message.slice(0, 160)}` } };
+  }
+  const decodedLimits = Schema.decodeUnknownResult(RateLimitsResponse)(input.rateLimits.result);
+  if (Result.isFailure(decodedLimits)) return { identity, limits: unknownShape("Codex's `account/rateLimits/read` answer", decodedLimits.failure.issue) };
+  const snapshot = decodedLimits.success.rateLimitsByLimitId?.codex ?? decodedLimits.success.rateLimits;
+  return {
+    identity,
+    limits: {
+      state: "reading",
+      asOf: input.now,
+      source: "account",
+      windows: [snapshot.primary, snapshot.secondary].flatMap((window) => window === null ? [] : [{
+        name: windowName(window.windowDurationMins),
+        minutes: window.windowDurationMins,
+        usedPercent: window.usedPercent,
+        resetsAt: window.resetsAt === null ? null : window.resetsAt * 1000,
+      }]),
+    },
+  };
+}
+
+// ── Session files ───────────────────────────────────────────────────────────────────────────────────
 
 const CodexWindow = Schema.Struct({
   used_percent: Schema.Finite,
@@ -52,7 +207,7 @@ const CODEX_TAIL_BYTES = 16 * 1024 * 1024;
 /** What one session file's latest `token_count` events say. */
 export interface SessionRecord {
   /** The newest rate-limit reading, or undefined when the file has none (a session run with an API key). */
-  readonly limits: Reading | undefined;
+  readonly limits: AccountLimits | undefined;
   /** The session's token total so far, or undefined when no event carries one. */
   readonly tokens: number | undefined;
 }
@@ -60,35 +215,36 @@ export interface SessionRecord {
 /** Session files keep growing while a session runs; one unchanged since it was last read is not read again. */
 const sessionCache = new Map<string, { readonly modifiedAt: number; readonly record: SessionRecord }>();
 
-function readCodex(account: string, now: number): Reading {
+/** The account's session files, newest first; files Codex deleted leave the cache. */
+function sessionFilesNewestFirst(account: string): { readonly path: string; readonly modifiedAt: number }[] {
   const files = sessionFiles(join(account, "sessions"))
     .map((path) => ({ path, modifiedAt: statSync(path).mtimeMs }))
     .sort((a, b) => b.modifiedAt - a.modifiedAt);
-  const since = now - PERIOD_DAYS * DAY_MS;
-  const recent = files.filter((file) => file.modifiedAt >= since);
+  const current = new Set(files.map((file) => file.path));
   for (const path of sessionCache.keys()) {
-    if (path.startsWith(account) && !files.some((file) => file.path === path)) sessionCache.delete(path);
+    if (path.startsWith(account) && !current.has(path)) sessionCache.delete(path);
   }
+  return files;
+}
 
+/** The limits Codex recorded with its latest turn, for when `codex app-server` cannot be asked; `why` says why it could not. */
+function savedLimits(account: string, why: string): AccountLimits {
   // The most recently written file holds the latest reading; an older one only matters when the newer
   // ones hold none.
-  let limits: Reading = { state: "none" };
-  for (const file of files.slice(0, CODEX_FILES_SEARCHED)) {
+  for (const file of sessionFilesNewestFirst(account).slice(0, CODEX_FILES_SEARCHED)) {
     const record = sessionRecord(file);
-    if (record.limits !== undefined) {
-      limits = record.limits;
-      break;
-    }
+    if (record.limits !== undefined) return record.limits.state === "reading" ? { ...record.limits, cliFailure: why } : record.limits;
   }
-  if (limits.state !== "reading") return limits;
+  return { state: "unknown", reason: why };
+}
 
-  const totals = recent.map((file) => sessionRecord(file).tokens).filter((tokens) => tokens !== undefined);
-  const tokens: TokenSpend = {
-    count: totals.reduce((sum, count) => sum + count, 0),
-    periodDays: PERIOD_DAYS,
-    sessions: totals.length,
-  };
-  return { ...limits, tokens };
+function localTokens(account: string, now: number): LocalUse {
+  const since = now - PERIOD_DAYS * DAY_MS;
+  const totals = sessionFilesNewestFirst(account)
+    .filter((file) => file.modifiedAt >= since)
+    .map((file) => sessionRecord(file).tokens)
+    .filter((tokens) => tokens !== undefined);
+  return { state: "tokens", periodDays: PERIOD_DAYS, count: totals.reduce((sum, count) => sum + count, 0), sessions: totals.length };
 }
 
 function sessionRecord(file: { readonly path: string; readonly modifiedAt: number }): SessionRecord {
@@ -109,7 +265,7 @@ function sessionFiles(dir: string): string[] {
 
 /** The newest rate-limit reading and token total in one session file, searched from the end, since files reach hundreds of MB. */
 export function latestSessionRecord(path: string): SessionRecord {
-  let limits: Reading | undefined;
+  let limits: AccountLimits | undefined;
   let tokens: number | undefined;
   for (const line of linesFromEnd(path, CODEX_TAIL_BYTES)) {
     const event = parseCodexLine(line);
@@ -143,18 +299,13 @@ export function parseCodexLine(line: string): SessionRecord | undefined {
   if (!Number.isFinite(asOf)) {
     return { limits: { state: "unknown", reason: "Codex's rate-limit record changed shape: timestamp is not a time" }, tokens };
   }
-  return {
-    limits: {
-      state: "reading",
-      asOf,
-      windows: [limits.primary, limits.secondary].flatMap((window) => window === null ? [] : [{
-        minutes: window.window_minutes,
-        usedPercent: window.used_percent,
-        resetsAt: window.resets_at === null ? null : window.resets_at * 1000,
-      }]),
-    },
-    tokens,
-  };
+  const windows: UsageWindow[] = [limits.primary, limits.secondary].flatMap((window) => window === null ? [] : [{
+    name: windowName(window.window_minutes),
+    minutes: window.window_minutes,
+    usedPercent: window.used_percent,
+    resetsAt: window.resets_at === null ? null : window.resets_at * 1000,
+  }]);
+  return { limits: { state: "reading", asOf, source: "saved", windows }, tokens };
 }
 
 const isTokenCount = (event: unknown): boolean =>

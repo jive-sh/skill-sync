@@ -33,9 +33,10 @@ import {
  * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
  * sign-in. Signing out, or the server rejecting the token, deletes the file.
  *
- * Every minute it also reads how much each Claude, Codex and Grok account on the machine has used, from
- * files and commands those tools provide (`readUsage`), and sends the numbers over the same connection
- * when they change, for the dashboard to show under this machine. No credential is read or sent.
+ * Every minute it also reads each Claude, Codex and Grok account on the machine (`readUsage`): who it is
+ * and its plan limits, asked of the tool's own CLI at most every five minutes, and this machine's use of
+ * it, from the files the tool writes. It sends them over the same connection when they change, for the
+ * dashboard. No credential is read or sent: the CLIs make the authenticated calls.
  *
  * It keeps itself on the latest published version (`autoUpgrade`): every 5 minutes it asks the package
  * manager that installed it whether a newer one is out, installs it the same way, and is restarted on it.
@@ -50,7 +51,7 @@ const PING_MS = 30_000;
 const PONG_TIMEOUT_MS = 75_000;
 const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 5 * 60_000;
-/** Claude Code refreshes its usage cache about every five minutes; reading more often costs a file read. */
+/** How often this machine's use is read from local files; account limits are asked of the CLIs less often (`ACCOUNT_READ_MS`). */
 const USAGE_READ_MS = 60_000;
 /** How long a sign-in waits for the browser before giving up. */
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
@@ -202,19 +203,26 @@ function report(folder: string, state: FolderState, detail?: string, activity?: 
 /** The usage the hub last heard, so it is sent again only when a number changes. */
 let reportedUsage = "";
 
+/** True while a reading runs: a CLI can take seconds to answer, and two readings at once would ask it twice. */
+let readingUsage = false;
+
 /** Sends every account's usage to the hub when it differs from what was last sent. */
-function reportUsage(): void {
-  if (socket === undefined) return;
+async function reportUsage(): Promise<void> {
+  if (socket === undefined || readingUsage) return;
+  readingUsage = true;
   let message: DaemonMessage;
   try {
-    message = { type: "usage", accounts: readUsage() };
+    message = { type: "usage", accounts: await readUsage() };
   } catch (cause) {
     // Only an unreadable home directory gets here; each account's own failure is reported as `unknown`.
     console.error(`could not read account usage: ${cause instanceof Error ? cause.message : String(cause)}`);
     return;
+  } finally {
+    readingUsage = false;
   }
   const text = JSON.stringify(message);
-  if (text === reportedUsage) return;
+  // The socket can have closed, or been replaced, while the CLIs ran.
+  if (text === reportedUsage || socket === undefined) return;
   socket.send(text);
   reportedUsage = text;
 }

@@ -2,7 +2,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { Result, Schema } from "effect";
-import { DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, type AgentTool, type Reading } from "./agent-tool";
+import type { LocalUse } from "../wire";
+import { DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, type AgentTool } from "./agent-tool";
 
 /**
  * Grok. Each account is a `GROK_HOME` (`~/.grok`, `~/.grok-<name>`), and Grok's docs name its `skills`
@@ -13,13 +14,17 @@ import { DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, 
  * session files: each session's token and cost totals (`costUsdTicks`, 10^10 per US dollar). The line sums
  * sessions active in the last `PERIOD_DAYS` days. A session's totals include history it inherited by
  * resume or fork, so a fork counts that part twice. Grok's plan allowance is only in its interactive
- * `/usage`, so no limit is shown.
+ * `/usage`, and `grok` has no command that says who is signed in, so no limit or account is shown.
  */
 export const grok: AgentTool = {
   tool: "grok",
   skillsFolders: (home) => homesNamed(home, "grok").map((account) => join(account, "skills")),
   accounts: (home) => homesNamed(home, "grok"),
-  readUsage: (account, _home, now) => readGrok(account, now),
+  readAccount: async () => ({
+    identity: null,
+    limits: { state: "none", reason: "only in Grok's interactive /usage" },
+  }),
+  readLocalUse: (account, _home, now) => readGrok(account, now),
 };
 
 const GrokUsage = Schema.Struct({
@@ -40,7 +45,7 @@ export type SessionTotals =
 /** A session's totals are fetched again only when its directory changed: each `grok usage` run takes most of a second. */
 const sessionCache = new Map<string, { readonly modifiedAt: number; readonly totals: SessionTotals }>();
 
-function readGrok(account: string, now: number): Reading {
+function readGrok(account: string, now: number): LocalUse {
   const command = join(account, "bin", "grok");
   const sessions = sessionDirs(join(account, "sessions"), now - PERIOD_DAYS * DAY_MS);
   if (sessions.length === 0) return { state: "none" };
@@ -60,7 +65,7 @@ function readGrok(account: string, now: number): Reading {
   if (totals.length === 0) return { state: "none" };
   const usd = totals.reduce((sum, session) => sum + session.usd, 0);
   return {
-    state: "estimate",
+    state: "spend",
     asOf: Math.max(...totals.map((session) => session.updatedAt)),
     periodDays: PERIOD_DAYS,
     spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 },

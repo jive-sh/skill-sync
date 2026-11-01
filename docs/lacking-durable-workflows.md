@@ -136,7 +136,7 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   `main`.
 - **Should be:** a release that knows which Jive packages depend on the one just published, and opens or
   pushes their dependency bump in dependency order once npm serves it.
-- **Belongs in:** `@jive-sh/jive` (the "topological release gating across packages" CONTEXT.md lists as its
+- **Belongs in:** `@jive-sh/jive` (the "topological release gating across packages" planned as its
   direction), reading each package's dependencies on the others.
 
 ## Registering an organization, its code repository and its npm connection on @jive-sh/server
@@ -148,3 +148,19 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   connection and setting up branch protection) and `connections.create` for npm, called by a signed-in person
   (Jive API v1 design doc §3, §7, §8).
 - **Belongs in:** @jive-sh/server, with the person's sign-in through `jive.sh`.
+
+## Testing Cli's Tab completion in zsh, fish and PowerShell
+- **By hand:** jive-abstract-library's CI runner has only bash, so its real-shell tests
+  (`src/internal/modules/shell-completion/scripts.test.ts`) skip zsh, fish and PowerShell there. For the 0.7.0
+  release (2026-10-31) an agent ran the suite in a local Debian container after installing zsh, fish, libicu and
+  pwsh by hand. Windows (PowerShell profiles, npm's `.cmd` shims) has never run at all.
+- **Should be:** the library's pipeline installs zsh, fish and pwsh before `jive:cicd:audit`, and a Windows job
+  runs the same tests, so every push checks all four shells.
+- **Belongs in:** jive-sh/jive's reusable pipeline (a per-package setup step) or jive-abstract-library's own
+  audit hook; a pipeline change, so Alex's decision.
+
+## Regenerating the Jive design page
+- **By hand:** someone runs `bun run --cwd jive-design-page generate` in the chaine monorepo to refresh
+  `jive-design-page/jive_design.html`, so the page shows stale versions and packages until then.
+- **Should be:** a workflow that regenerates it whenever a package folder changes or a package publishes.
+- **Belongs in:** the local Jive daemon, as an `effect/workflow` definition. Needs Alex's yes: it adds a new mechanism to the daemon.

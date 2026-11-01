@@ -2,16 +2,22 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PERIOD_DAYS, linesFromEnd, type Reading } from "./agent-tool";
-import { claude, claudeStatePath, estimateSpend, isBedrockModelId, latestSessionCost, parseClaudeState, settingsUseBedrock, type SessionCost } from "./claude";
-import { codex, parseCodexLine } from "./codex";
+import type { AccountLimits, AccountUsage, LocalUse } from "../wire";
+import { PERIOD_DAYS, linesFromEnd, type AccountContext } from "./agent-tool";
+import {
+  claude, claudeStatePath, estimateSpend, isBedrockModelId, latestSessionCost, parseAuthStatus, parseClaudeState, parseResetTime,
+  parseUsageOutput, settingsUseBedrock, type SessionCost,
+} from "./claude";
+import { codex, parseAppServerAnswers, parseCodexLine } from "./codex";
 import { grok, parseGrokUsage } from "./grok";
-import { readUsage } from ".";
+import { ACCOUNT_READ_MS, readUsage } from ".";
 
 /**
  * Pins how account folders are found and how each tool's usage record is read. The records below are
  * trimmed copies of real ones (account ids replaced): Claude Code 2.1.310's `cachedUsageUtilization` and
- * session-file `cost-state` line, a Codex `token_count` event, and `grok usage` output from Grok 1.0.70. When a tool changes its format, these show what this version expected.
+ * session-file `cost-state` line, Claude Code 2.1.316's `claude -p /usage` and `claude auth status`, a Codex
+ * `token_count` event, `codex app-server` answers from Codex 0.151 and 0.166, and `grok usage` output from
+ * Grok 1.0.70. When a tool changes its format, these show what this version expected.
  */
 
 const homes: string[] = [];
@@ -46,6 +52,11 @@ const claudeCache = (spend: unknown = {
   },
 });
 const claudeState = (cache: unknown) => JSON.stringify({ numStartups: 3, cachedUsageUtilization: cache });
+/** The account as `claudeCache()` records it, read because the CLI could not be asked, for `cliFailure`. */
+const savedClaude = (cliFailure: string) => {
+  const saved = parseClaudeState(claudeState(claudeCache()));
+  return { identity: saved.identity, limits: { ...saved.limits, cliFailure } };
+};
 
 const codexLine = (rateLimits: unknown, timestamp = "2026-09-05T19:40:38.460Z") => JSON.stringify({
   timestamp,
@@ -67,12 +78,13 @@ const codexLimits = {
   plan_type: "plus",
   rate_limit_reached_type: null,
 };
-const codexReading: Reading = {
+const codexReading: AccountLimits = {
   state: "reading",
   asOf: Date.parse("2026-09-05T19:40:38.460Z"),
+  source: "saved",
   windows: [
-    { minutes: 300, usedPercent: 24, resetsAt: 1788652301000 },
-    { minutes: 10080, usedPercent: 16, resetsAt: 1789170646000 },
+    { name: "5-hour", minutes: 300, usedPercent: 24, resetsAt: 1788652301000 },
+    { name: "weekly", minutes: 10080, usedPercent: 16, resetsAt: 1789170646000 },
   ],
 };
 
@@ -93,43 +105,49 @@ test("the default Claude account keeps its state beside its folder; others insid
   expect(claudeStatePath("/h/.claude-work", "/h")).toBe("/h/.claude-work/.claude.json");
 });
 
-test("Claude's usage cache reads as the 5-hour and weekly windows, as of when Claude Code fetched it", () => {
-  expect(parseClaudeState(claudeState(claudeCache()))).toEqual({
+test("Claude's usage cache reads as the 5-hour and weekly windows, as of when Claude Code fetched it, and names the account", () => {
+  expect(parseClaudeState(claudeState(claudeCache())).limits).toEqual({
     state: "reading",
     asOf: 1793019227405,
+    source: "saved",
     windows: [
-      { minutes: 300, usedPercent: 48, resetsAt: Date.parse("2026-10-26T20:00:00.082Z") },
-      { minutes: 10080, usedPercent: 29, resetsAt: Date.parse("2026-10-28T00:00:00.376Z") },
+      { name: "5-hour", minutes: 300, usedPercent: 48, resetsAt: Date.parse("2026-10-26T20:00:00.082Z") },
+      { name: "weekly", minutes: 10080, usedPercent: 29, resetsAt: Date.parse("2026-10-28T00:00:00.376Z") },
     ],
+  });
+  const signedIn = JSON.stringify({ oauthAccount: { emailAddress: "a@example.com", organizationUuid: "org-1", billingType: "stripe_subscription" } });
+  expect(parseClaudeState(signedIn)).toEqual({
+    identity: { id: "org-1", email: "a@example.com", plan: null },
+    limits: { state: "none", reason: "no usage recorded" },
   });
 });
 
 test("a Claude window that has not started has no reset time", () => {
   const cache = claudeCache();
   cache.utilization.five_hour = claudeWindow(0, null);
-  const reading = parseClaudeState(claudeState(cache));
-  expect(reading.state === "reading" && reading.windows[0]).toEqual({ minutes: 300, usedPercent: 0, resetsAt: null });
+  const reading = parseClaudeState(claudeState(cache)).limits;
+  expect(reading.state === "reading" && reading.windows[0]).toEqual({ name: "5-hour", minutes: 300, usedPercent: 0, resetsAt: null });
 });
 
 test("Claude usage credits show as money spent once they are on", () => {
   const used = { amount_minor: 1234, currency: "USD", exponent: 2 };
-  const on = parseClaudeState(claudeState(claudeCache({ used, limit: null, enabled: true })));
+  const on = parseClaudeState(claudeState(claudeCache({ used, limit: null, enabled: true }))).limits;
   expect(on.state === "reading" && on.spent).toEqual({ used: { amountMinor: 1234, currency: "USD", exponent: 2 }, limit: null });
-  const capped = parseClaudeState(claudeState(claudeCache({ used, limit: { amount_minor: 5000, currency: "USD", exponent: 2 }, enabled: true })));
+  const capped = parseClaudeState(claudeState(claudeCache({ used, limit: { amount_minor: 5000, currency: "USD", exponent: 2 }, enabled: true }))).limits;
   expect(capped.state === "reading" && capped.spent?.limit).toEqual({ amountMinor: 5000, currency: "USD", exponent: 2 });
-  const off = parseClaudeState(claudeState(claudeCache()));
+  const off = parseClaudeState(claudeState(claudeCache())).limits;
   expect(off.state === "reading" && "spent" in off).toBe(false);
 });
 
 test("a Claude account that never fetched usage has none; a changed cache is unknown, not guessed", () => {
-  expect(parseClaudeState(JSON.stringify({ numStartups: 1 }))).toEqual({ state: "none" });
-  const renamed = parseClaudeState(claudeState({ fetchedAtMs: 1793019227405, usage: {} }));
+  expect(parseClaudeState(JSON.stringify({ numStartups: 1 })).limits).toEqual({ state: "none", reason: "no usage recorded" });
+  const renamed = parseClaudeState(claudeState({ fetchedAtMs: 1793019227405, usage: {} })).limits;
   expect(renamed.state).toBe("unknown");
   expect(renamed.state === "unknown" && renamed.reason).toContain("Claude Code's usage cache changed shape");
   const retyped = claudeCache();
   (retyped.utilization.seven_day as { utilization: unknown }).utilization = "29%";
-  expect(parseClaudeState(claudeState(retyped)).state).toBe("unknown");
-  expect(parseClaudeState("{\"cachedUsage").state).toBe("unknown");
+  expect(parseClaudeState(claudeState(retyped)).limits.state).toBe("unknown");
+  expect(parseClaudeState("{\"cachedUsage").limits.state).toBe("unknown");
 });
 
 test("a Codex token_count event reads as its primary and secondary windows, as of the event, and the session's token total", () => {
@@ -176,7 +194,7 @@ test("lines come back last first, across chunk boundaries, skipping lines too lo
   expect([...linesFromEnd(join(home, "f.jsonl"), 10)]).toEqual(["last"]);
 });
 
-test("every account on a machine is read; Codex's latest reading may sit in an older session file", () => {
+test("without a CLI, limits come from the tools' saved records; Codex's latest may sit in an older session file", async () => {
   const home = makeHome();
   write(join(home, ".claude-work/.claude.json"), claudeState(claudeCache()));
   mkdirSync(join(home, ".claude"));
@@ -188,14 +206,17 @@ test("every account on a machine is read; Codex's latest reading may sit in an o
   // A later session run with an API key: its events report no plan limits.
   write(newer, `${codexLine(null, "2026-09-06T10:00:00Z")}\n`);
   utimesSync(older, new Date(1_000_000), new Date(1_000_000));
+  utimesSync(newer, new Date(NOW - DAY), new Date(NOW - DAY));
   mkdirSync(join(home, ".codex-empty"));
 
-  expect(readUsage(home)).toEqual([
-    { tool: "claude", home: ".claude", state: "none" },
-    expect.objectContaining({ tool: "claude", home: ".claude-broken", state: "unknown" }),
-    { tool: "claude", home: ".claude-work", ...parseClaudeState(claudeState(claudeCache())) },
-    { tool: "codex", home: ".codex", ...codexReading, tokens: { count: 288165427, periodDays: PERIOD_DAYS, sessions: 1 } },
-    { tool: "codex", home: ".codex-empty", state: "none" },
+  const noTokens: LocalUse = { state: "tokens", periodDays: PERIOD_DAYS, count: 0, sessions: 0 };
+  expect(await readUsage({ home, now: NOW, findCommand: () => undefined })).toEqual([
+    { tool: "claude", home: ".claude", identity: null, limits: { state: "unknown", reason: "`claude` was not found" }, local: { state: "none" } },
+    expect.objectContaining({ tool: "claude", home: ".claude-broken", limits: expect.objectContaining({ state: "unknown" }) }),
+    { tool: "claude", home: ".claude-work", ...savedClaude("`claude` was not found"), local: { state: "none" } },
+    // The older file is outside the period, so only the newer one's tokens count; its limits are still the latest Codex recorded.
+    { tool: "codex", home: ".codex", identity: null, limits: { ...codexReading, cliFailure: "`codex` was not found" }, local: { ...noTokens, count: 288165427, sessions: 1 } },
+    { tool: "codex", home: ".codex-empty", identity: null, limits: { state: "unknown", reason: "`codex` was not found" }, local: noTokens },
   ]);
 });
 
@@ -291,7 +312,7 @@ test("spend sums each session once over the period, as of the newest, in cents",
     bedrockSetting: false,
     now: NOW,
   })).toEqual({
-    state: "estimate", asOf: NOW - DAY, periodDays: PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
+    state: "spend", asOf: NOW - DAY, periodDays: PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
     sessions: 2, partial: false, provider: null,
   });
   expect(estimateSpend({ sessions: [cost("old", 100, NOW - 40 * DAY), { kind: "none" }], bedrockSetting: false, now: NOW })).toEqual({ state: "none" });
@@ -300,7 +321,7 @@ test("spend sums each session once over the period, as of the newest, in cents",
 test("spend is Bedrock by its settings or its model IDs, and partial when a model had no price", () => {
   const read = (sessions: ReadonlyArray<SessionCost>, bedrockSetting: boolean) => {
     const reading = estimateSpend({ sessions, bedrockSetting, now: NOW });
-    return reading.state === "estimate" ? { provider: reading.provider, partial: reading.partial } : reading.state;
+    return reading.state === "spend" ? { provider: reading.provider, partial: reading.partial } : reading.state;
   };
   expect(read([cost("a", 1, NOW)], true)).toEqual({ provider: "bedrock", partial: false });
   expect(read([cost("a", 1, NOW, ["claude-opus-5-5"]), cost("b", 1, NOW, ["us.anthropic.claude-opus-5-5"])], false)).toEqual({ provider: "bedrock", partial: false });
@@ -315,7 +336,7 @@ function latestChanged(): SessionCost {
   return latestSessionCost({ path, modifiedAt: NOW });
 }
 
-test("plan accounts keep their limits; accounts without a plan, or with Bedrock on, show their spend", () => {
+test("every Claude account shows this machine's spend; an account with Bedrock on has no plan limits, whatever its cache says", async () => {
   const home = makeHome();
   const session = (account: string, id: string, usd: number, models?: ReadonlyArray<string>, modifiedAt = NOW - DAY) =>
     writeSession(join(home, account, "projects/-Users-x-repo", `${id}.jsonl`), sessionFile(id, usd, "2026-10-25T12:00:00.000Z", models), modifiedAt);
@@ -328,9 +349,7 @@ test("plan accounts keep their limits; accounts without a plan, or with Bedrock 
   session(".claude", "stale", 99, undefined, NOW - 45 * DAY);
   // Bedrock set only in a shell: the model IDs say so.
   session(".claude-shell", "s1", 0.75, ["us.anthropic.claude-opus-5-5"]);
-  // An API key: spend, provider unknown.
-  session(".claude-api", "a1", 2);
-  // A subscription: its limits, not its sessions' list-price cost.
+  // A subscription: its limits, and its sessions' list-price cost too.
   write(join(home, ".claude-sub/.claude.json"), claudeState(claudeCache()));
   session(".claude-sub", "p1", 40);
   // Switched to Bedrock with an old plan cache left behind.
@@ -338,14 +357,14 @@ test("plan accounts keep their limits; accounts without a plan, or with Bedrock 
   write(join(home, ".claude-switched/settings.json"), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }));
 
   const asOf = Date.parse("2026-10-25T12:00:00.000Z");
-  const estimate = (usd: number, sessions: number, provider: "bedrock" | null): Reading =>
-    ({ state: "estimate", asOf, periodDays: PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
-  expect(readUsage(home, NOW)).toEqual([
-    { tool: "claude", home: ".claude", ...estimate(4.75, 2, "bedrock") },
-    { tool: "claude", home: ".claude-api", ...estimate(2, 1, null) },
-    { tool: "claude", home: ".claude-shell", ...estimate(0.75, 1, "bedrock") },
-    { tool: "claude", home: ".claude-sub", ...parseClaudeState(claudeState(claudeCache())) },
-    { tool: "claude", home: ".claude-switched", state: "none" },
+  const spend = (usd: number, sessions: number, provider: "bedrock" | null): LocalUse =>
+    ({ state: "spend", asOf, periodDays: PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
+  const bedrock: AccountLimits = { state: "none", reason: "Amazon Bedrock has no plan limits" };
+  expect(await readUsage({ home, now: NOW, findCommand: () => undefined })).toEqual([
+    { tool: "claude", home: ".claude", identity: null, limits: bedrock, local: spend(4.75, 2, "bedrock") },
+    { tool: "claude", home: ".claude-shell", identity: null, limits: { state: "unknown", reason: "`claude` was not found" }, local: spend(0.75, 1, "bedrock") },
+    { tool: "claude", home: ".claude-sub", ...savedClaude("`claude` was not found"), local: spend(40, 1, null) },
+    { tool: "claude", home: ".claude-switched", identity: null, limits: bedrock, local: { state: "none" } },
   ]);
 });
 
@@ -366,8 +385,8 @@ case "$2" in
 esac
 `);
   chmodSync(join(account, "bin/grok"), 0o755);
-  expect(grok.readUsage(account, home, Date.now())).toEqual({
-    state: "estimate",
+  expect(grok.readLocalUse(account, home, Date.now())).toEqual({
+    state: "spend",
     asOf: Date.parse("2026-11-01T05:26:28Z"),
     periodDays: PERIOD_DAYS,
     spent: { amountMinor: 137, currency: "USD", exponent: 2 },
@@ -376,6 +395,209 @@ esac
     provider: null,
   });
   mkdirSync(join(sessions, "01a19999-0000-7000-8000-000000000000"));
-  const failing = grok.readUsage(account, home, Date.now());
+  const failing = grok.readLocalUse(account, home, Date.now());
   expect(failing.state === "unknown" && failing.reason).toContain("boom");
+});
+
+// ── Account readings from the tools' CLIs ───────────────────────────────────────────────────────────
+
+/** What `claude -p /usage` printed for an account with a session running, Claude Code 2.1.316, at USAGE_NOW. */
+const claudeUsageOutput = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 27% used · resets Nov 1 at 3:40am (America/Los_Angeles)
+Current week (all models): 21% used · resets Nov 3 at 4pm (America/Los_Angeles)
+Current week (Fable): 0% used · resets Nov 3 at 4pm (America/Los_Angeles)
+
+What's contributing to your usage?
+Approximate · sessions on this machine only · shares overlap
+
+Last 24h · 1122 requests · 30 sessions
+  79%  Start fresh when you switch tasks · run /clear
+  Top skills: /effect 22%, /overview-dashboard 4%
+`;
+/** 00:41 in Los Angeles on the night daylight saving time ends, so the 3:40am reset is in PST. */
+const USAGE_NOW = Date.parse("2026-11-01T07:41:00Z");
+const claudeAuthStatus = (email: string, orgId: string) => JSON.stringify({
+  loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", analyticsDisabled: false,
+  projectsDirectory: "/Users/x/.claude-chaine/projects", configDirectory: "/Users/x/.claude-chaine",
+  email, orgId, orgName: `${email}'s Organization`, subscriptionType: "max",
+}, null, 2);
+
+test("`claude /usage` reads as each limit by name, reset times in the zone it names, across a daylight-saving change", () => {
+  expect(parseUsageOutput(claudeUsageOutput, USAGE_NOW)).toEqual({
+    state: "reading",
+    asOf: USAGE_NOW,
+    source: "account",
+    windows: [
+      { name: "5-hour", minutes: 300, usedPercent: 27, resetsAt: 1793533200000 },
+      { name: "weekly", minutes: 10080, usedPercent: 21, resetsAt: 1793750400000 },
+      { name: "weekly Fable", minutes: 10080, usedPercent: 0, resetsAt: 1793750400000 },
+    ],
+  });
+  // An account with no session running prints no session line.
+  const idle = parseUsageOutput("Current week (all models): 65% used · resets Nov 3 at 10pm (America/Los_Angeles)\n", USAGE_NOW);
+  expect(idle.state === "reading" && idle.windows).toEqual([{ name: "weekly", minutes: 10080, usedPercent: 65, resetsAt: 1793772000000 }]);
+  expect(parseUsageOutput("Current week (all models): 3% used\n", USAGE_NOW).state === "reading").toBe(true);
+  const changed = parseUsageOutput("Usage: 21% of your weekly limit\n", USAGE_NOW);
+  expect(changed.state === "unknown" && changed.reason).toContain("`claude /usage` changed shape");
+  expect(parseUsageOutput("Current week (all models): 21% used · resets soon (America/Los_Angeles)\n", USAGE_NOW).state).toBe("unknown");
+});
+
+test("a reset time without a year is the nearest one; a time alone is the next one; an unknown zone is not guessed", () => {
+  const newYearsEve = Date.parse("2026-12-30T12:00:00Z");
+  expect(parseResetTime({ text: "Jan 2 at 4pm", timeZone: "UTC", now: newYearsEve })).toBe(Date.parse("2027-01-02T16:00:00Z"));
+  expect(parseResetTime({ text: "Dec 29 at 11:30pm", timeZone: "UTC", now: newYearsEve })).toBe(Date.parse("2026-12-29T23:30:00Z"));
+  expect(parseResetTime({ text: "Mar 4, 2028 at 12am", timeZone: "UTC", now: newYearsEve })).toBe(Date.parse("2028-03-04T00:00:00Z"));
+  expect(parseResetTime({ text: "3:40am", timeZone: "UTC", now: USAGE_NOW })).toBe(Date.parse("2026-11-02T03:40:00Z"));
+  expect(parseResetTime({ text: "12pm", timeZone: "UTC", now: USAGE_NOW })).toBe(Date.parse("2026-11-01T12:00:00Z"));
+  expect(parseResetTime({ text: "Nov 3 at 4pm", timeZone: "Mars/Olympus", now: USAGE_NOW })).toBeUndefined();
+  expect(parseResetTime({ text: "Smarch 3 at 4pm", timeZone: "UTC", now: USAGE_NOW })).toBeUndefined();
+});
+
+test("`claude auth status` names a subscription's account; another sign-in has no plan limits", () => {
+  expect(parseAuthStatus(claudeAuthStatus("a@example.com", "org-1"))).toEqual({
+    kind: "subscription", identity: { id: "org-1", email: "a@example.com", plan: "max" },
+  });
+  expect(parseAuthStatus(JSON.stringify({ loggedIn: false }))).toEqual({ kind: "signedOut" });
+  expect(parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" }))).toEqual({
+    kind: "noPlan", identity: null, reason: "signed in with api_key: no plan limits",
+  });
+  expect(parseAuthStatus("Not JSON").kind).toBe("changed");
+});
+
+/** `codex app-server`'s answers, as Codex 0.166 gave them for a signed-in account. */
+const codexAccountAnswer = {
+  id: 2,
+  result: {
+    account: { type: "chatgpt", email: "a@example.com", planType: "promax", workspaceName: null },
+    requiresOpenaiAuth: true,
+    workspaceRouting: { chatgptAccountId: "00000000-0000-4000-8000-000000000000", backendOrigin: "https://chatgpt.com", accountRoutingOverride: "NO_CONSTRAINT" },
+  },
+};
+const codexSnapshot = {
+  limitId: "codex", limitName: null, normalModelSlug: null,
+  primary: { usedPercent: 92, windowDurationMins: 10080, resetsAt: 1793774310 },
+  secondary: null,
+  credits: { hasCredits: false, unlimited: false, balance: "0" },
+  individualLimit: null, spendControlReached: false, planType: "promax", rateLimitReachedType: null,
+};
+const codexRateLimitsAnswer = {
+  id: 3,
+  result: {
+    ordinaryUsageAllowed: true, rateLimits: codexSnapshot, rateLimitsByLimitId: { codex: codexSnapshot },
+    rateLimitResetCredits: { availableCount: 1, credits: [] }, accountId: "00000000-0000-4000-8000-000000000000", rateLimitUpsell: null,
+  },
+};
+const codexAccountLimits: AccountLimits = {
+  state: "reading", asOf: USAGE_NOW, source: "account",
+  windows: [{ name: "weekly", minutes: 10080, usedPercent: 92, resetsAt: 1793774310000 }],
+};
+
+test("`codex app-server` answers read as the account and its main bucket's limits", () => {
+  expect(parseAppServerAnswers({ account: codexAccountAnswer, rateLimits: codexRateLimitsAnswer, now: USAGE_NOW })).toEqual({
+    identity: { id: "a@example.com", email: "a@example.com", plan: "promax" },
+    limits: codexAccountLimits,
+  });
+  // Codex 0.151, in the ChatGPT desktop app: no plan name, no `rateLimitsByLimitId` beyond the main one.
+  const older = parseAppServerAnswers({
+    account: { id: 2, result: { account: { type: "chatgpt", email: "a@example.com", planType: "unknown" }, requiresOpenaiAuth: true } },
+    rateLimits: { id: 3, result: { rateLimits: { limitId: "codex", primary: codexSnapshot.primary, secondary: null } } },
+    now: USAGE_NOW,
+  });
+  expect(older).toEqual({ identity: { id: "a@example.com", email: "a@example.com", plan: null }, limits: codexAccountLimits });
+});
+
+test("a signed-out or API-key Codex has no plan limits; a refused or changed answer is unknown", () => {
+  const read = (account: object, rateLimits: object = codexRateLimitsAnswer) =>
+    parseAppServerAnswers({ account: { id: 2, ...account }, rateLimits: { id: 3, ...rateLimits }, now: USAGE_NOW });
+  expect(read({ result: { account: null, requiresOpenaiAuth: true } })).toEqual({ identity: null, limits: { state: "none", reason: "signed out" } });
+  expect(read({ result: { account: { type: "apiKey" }, requiresOpenaiAuth: true } }).limits).toEqual({ state: "none", reason: "signed in with apiKey: no plan limits" });
+  expect(read(codexAccountAnswer, { error: { message: "usage endpoint unavailable" } }).limits)
+    .toEqual({ state: "unknown", reason: "`account/rateLimits/read` failed: usage endpoint unavailable" });
+  expect(read(codexAccountAnswer, { result: { rateLimits: { primary: { usedPercent: "92%" } } } }).limits.state).toBe("unknown");
+  expect(read({ result: { profile: {} } }).limits.state).toBe("unknown");
+});
+
+/** A stand-in for a tool's CLI: a shell script that logs each run to `log` and prints what the real one did. */
+function fakeCommand(path: string, script: string): string {
+  write(path, `#!/bin/sh\n${script}`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
+test("readUsage asks each tool's CLI for its accounts, once per ACCOUNT_READ_MS, and falls back to saved records when it fails", async () => {
+  const home = makeHome();
+  const bin = join(home, "bin");
+  const log = join(home, "runs.log");
+  mkdirSync(join(home, ".claude"));
+  mkdirSync(join(home, ".claude-work"));
+  write(join(home, ".claude-work/.claude.json"), claudeState(claudeCache()));
+  mkdirSync(join(home, ".codex"));
+  mkdirSync(join(home, ".grok"));
+  write(join(home, "auth-home.json"), claudeAuthStatus("home@example.com", "org-home"));
+  write(join(home, "auth-work.json"), claudeAuthStatus("work@example.com", "org-work"));
+  write(join(home, "usage.txt"), claudeUsageOutput);
+  // The default account fails /usage, so its limits fall back to its cache, which it has none of.
+  const claudeCommand = fakeCommand(join(bin, "claude"), `echo "claude $CLAUDE_CONFIG_DIR $*" >> '${log}'
+case "$1" in
+  auth) if [ -z "$CLAUDE_CONFIG_DIR" ]; then cat '${join(home, "auth-home.json")}'; else cat '${join(home, "auth-work.json")}'; fi ;;
+  -p) if [ -z "$CLAUDE_CONFIG_DIR" ]; then echo "rate limited" >&2; exit 1; else cat '${join(home, "usage.txt")}'; fi ;;
+esac
+`);
+  // Answers each request by its id, as \`codex app-server\` does, and runs until it is stopped.
+  const codexCommand = fakeCommand(join(bin, "codex"), `echo "codex $CODEX_HOME $*" >> '${log}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":1,'*) echo '{"id":1,"result":{"userAgent":"x","codexHome":"x","platformFamily":"unix","platformOs":"macos"}}' ;;
+    *'"id":2,'*) echo '{"method":"account/updated","params":{"authMode":"chatgpt"}}'; echo '${JSON.stringify(codexAccountAnswer)}' ;;
+    *'"id":3,'*) echo '${JSON.stringify(codexRateLimitsAnswer)}' ;;
+  esac
+done
+`);
+  const context: Partial<AccountContext> = {
+    home,
+    now: USAGE_NOW,
+    findCommand: ({ name }) => name === "claude" ? claudeCommand : name === "codex" ? codexCommand : undefined,
+  };
+  const grokNone: AccountLimits = { state: "none", reason: "only in Grok's interactive /usage" };
+  const expected: AccountUsage[] = [
+    {
+      tool: "claude", home: ".claude", identity: { id: "org-home", email: "home@example.com", plan: "max" },
+      limits: { state: "unknown", reason: "`claude -p /usage` failed: rate limited" }, local: { state: "none" },
+    },
+    {
+      tool: "claude", home: ".claude-work", identity: { id: "org-work", email: "work@example.com", plan: "max" },
+      limits: parseUsageOutput(claudeUsageOutput, USAGE_NOW), local: { state: "none" },
+    },
+    {
+      tool: "codex", home: ".codex", identity: { id: "a@example.com", email: "a@example.com", plan: "promax" },
+      limits: codexAccountLimits, local: { state: "tokens", periodDays: PERIOD_DAYS, count: 0, sessions: 0 },
+    },
+    { tool: "grok", home: ".grok", identity: null, limits: grokNone, local: { state: "none" } },
+  ];
+  expect(await readUsage(context)).toEqual(expected);
+  const runs = () => Bun.file(log).text().then((text) => text.trim().split("\n").sort());
+  // The default account runs with no CLAUDE_CONFIG_DIR; /usage is never saved as a session.
+  expect(await runs()).toEqual([
+    "claude  -p /usage --no-session-persistence",
+    "claude  auth status",
+    `claude ${join(home, ".claude-work")} -p /usage --no-session-persistence`,
+    `claude ${join(home, ".claude-work")} auth status`,
+    `codex ${join(home, ".codex")} app-server`,
+  ]);
+  // Within ACCOUNT_READ_MS the CLIs are not asked again.
+  expect(await readUsage({ ...context, now: USAGE_NOW + ACCOUNT_READ_MS - 1 })).toEqual(expected);
+  expect((await runs()).length).toBe(5);
+  await readUsage({ ...context, now: USAGE_NOW + ACCOUNT_READ_MS });
+  expect((await runs()).length).toBe(10);
+});
+
+test("a signed-out Claude account is said to be signed out, though `claude auth status` exits 1 for it", async () => {
+  const home = makeHome();
+  mkdirSync(join(home, ".claude-out"));
+  write(join(home, "auth.json"), JSON.stringify({ loggedIn: false, authMethod: "none", apiProvider: "firstParty" }));
+  const command = fakeCommand(join(home, "bin/claude"), `case "$1" in auth) cat '${join(home, "auth.json")}'; exit 1 ;; *) echo "Total cost: $0.0000" ;; esac\n`);
+  expect(await readUsage({ home, now: USAGE_NOW, findCommand: ({ name }) => name === "claude" ? command : undefined })).toEqual([
+    { tool: "claude", home: ".claude-out", identity: null, limits: { state: "none", reason: "signed out" }, local: { state: "none" } },
+  ]);
 });

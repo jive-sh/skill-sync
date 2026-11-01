@@ -164,3 +164,18 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   `jive-design-page/jive_design.html`, so the page shows stale versions and packages until then.
 - **Should be:** a workflow that regenerates it whenever a package folder changes or a package publishes.
 - **Belongs in:** the local Jive daemon, as an `effect/workflow` definition. Needs Alex's yes: it adds a new mechanism to the daemon.
+
+## Creating an Expo app's EAS project before its first deploy
+- **By hand:** jive-abstract-app-expo's hooks need `expo.owner` and `expo.extra.eas.projectId` in the app's
+  `app.json`, so for @jive-sh/app (2026-11-01) an agent ran `eas init --non-interactive --force` with the `jive-ci`
+  robot's token, which created the project `jive-sh/jive-sh` and wrote its id.
+- **Should be:** the deploy provisions the project when it is missing, as every deploy provisions what it deploys
+  to, and the build reads the id from where the deploy recorded it.
+- **Belongs in:** jive-abstract-app-expo's deploy, provisioning through @jive-sh/server (`jive provision`).
+
+## Creating the DNS records a custom domain needs
+- **By hand:** jive-abstract-app-expo and jive-abstract-backend-convex print the records a custom domain needs
+  (`jive.sh` on EAS Hosting, `api.jive.sh` on Convex) and a person or agent creates them in the domain's DNS zone.
+- **Should be:** the deploy sets them through the organization's DNS connection, idempotently.
+- **Belongs in:** a DNS resource connector (`jive-abstract-resource-connector-dns`, proposed on the design page),
+  installed in @jive-sh/server and called by both abstracts' deploys.

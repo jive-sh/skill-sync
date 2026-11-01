@@ -176,6 +176,11 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 ## Creating the DNS records a custom domain needs
 - **By hand:** jive-abstract-app-expo and jive-abstract-backend-convex print the records a custom domain needs
   (`jive.sh` on EAS Hosting, `api.jive.sh` on Convex) and a person or agent creates them in the domain's DNS zone.
-- **Should be:** the deploy sets them through the organization's DNS connection, idempotently.
+  For jive.sh (2026-11-01) an agent created the three EAS records through Cloudflare's API. The old apex record
+  could not be deleted that way: Cloudflare marked it read-only, owned (`meta.origin_worker_id`) by a Worker
+  custom domain that no longer existed. Attaching jive.sh to that Worker as a custom domain again, which took the
+  same id, then deleting the custom domain removed the record.
+- **Should be:** the deploy sets them through the organization's DNS connection, idempotently, and replaces a
+  record another product owns by releasing it through that product.
 - **Belongs in:** a DNS resource connector (`jive-abstract-resource-connector-dns`, proposed on the design page),
   installed in @jive-sh/server and called by both abstracts' deploys.

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +7,7 @@ import {
   CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
   type AccountContext, type AccountReading, type AgentTool,
 } from "./agent-tool";
+import { askJsonRpc, isFile, type RpcResponse } from "./command";
 
 /**
  * Codex. Each account is a `CODEX_HOME` (`~/.codex`, `~/.codex-<name>`). Every account reads a user's
@@ -17,7 +17,7 @@ import {
  * - Account: `codex app-server` speaks JSON-RPC over stdio, the protocol Codex's own editors and desktop
  *   app use (openai/codex, codex-rs/app-server-protocol). `account/read` says who is signed in and
  *   `account/rateLimits/read` fetches the account's limits from OpenAI. The `codex` binary is looked for
- *   on PATH, in the folders npm, bun and Homebrew install to, and inside the ChatGPT and Codex desktop
+ *   on PATH, in the folders npm, bun and Homebrew install to, in Codex's editor extension, and inside the ChatGPT and Codex desktop
  *   apps, which ship one. Without one, the limits are the ones Codex recorded with its latest turn, as a
  *   `token_count` event in that turn's session file under `sessions/` (Codex's `RateLimitSnapshot`,
  *   codex-rs/protocol/src/protocol.rs).
@@ -39,86 +39,55 @@ export const codex: AgentTool = {
 const appBundles = (home: string): string[] => ["/Applications", join(home, "Applications")]
   .flatMap((folder) => ["ChatGPT.app", "Codex.app"].map((app) => join(folder, app, "Contents", "Resources", "codex")));
 
-async function readCodexAccount(account: string, { home, now, findCommand }: AccountContext): Promise<AccountReading> {
-  const command = findCommand({ name: "codex", also: appBundles(home) });
-  if (command === undefined) return { identity: null, limits: savedLimits(account, "`codex` was not found") };
-  const answers = await askAppServer({ command, account });
-  if (answers.kind === "failed") return { identity: null, limits: savedLimits(account, answers.reason) };
-  return parseAppServerAnswers({ account: answers.account, rateLimits: answers.rateLimits, now });
+/**
+ * The editors whose extension folders can hold Codex's extension (`openai.chatgpt`), which ships a `codex` binary at
+ * `bin/<platform>/codex`: VS Code and its Insiders build, Cursor and Windsurf, each with the `-server` folder
+ * their remote (SSH) mode installs extensions into on the remote machine.
+ */
+const EDITOR_FOLDERS = [".vscode", ".vscode-insiders", ".cursor", ".windsurf"].flatMap((editor) => [editor, `${editor}-server`]);
+
+/** Every `codex` binary in an installed Codex extension, the most recently installed first. */
+export function extensionBinaries(home: string): string[] {
+  const file = process.platform === "win32" ? "codex.exe" : "codex";
+  return EDITOR_FOLDERS.flatMap((editor) => {
+    const extensions = join(home, editor, "extensions");
+    if (!isDirectory(extensions)) return [];
+    return readdirSync(extensions)
+      .filter((entry) => entry.startsWith("openai.chatgpt-"))
+      .flatMap((entry) => {
+        const bin = join(extensions, entry, "bin");
+        if (!isDirectory(bin)) return [];
+        return readdirSync(bin).map((platform) => join(bin, platform, file)).filter(isFile);
+      });
+  }).map((path) => ({ path, modifiedAt: statSync(path).mtimeMs }))
+    .sort((a, b) => b.modifiedAt - a.modifiedAt)
+    .map((binary) => binary.path);
 }
 
-/** One JSON-RPC response: `result` on success, `error` otherwise. */
-const RpcResponse = Schema.Struct({
-  id: Schema.Finite,
-  result: Schema.optionalKey(Schema.Unknown),
-  error: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
-});
-type RpcResponse = Schema.Schema.Type<typeof RpcResponse>;
-
-const REQUEST_ACCOUNT = 2;
-const REQUEST_RATE_LIMITS = 3;
-
-/**
- * Starts `codex app-server` for the account, initializes the connection as the protocol requires, asks
- * for the account and its rate limits, and stops it once both answers are in. `account/rateLimits/read`
- * is sent without params: older versions refuse any (`invalid type: map, expected unit`).
- */
-function askAppServer(input: { readonly command: string; readonly account: string }): Promise<
-  | { readonly kind: "answered"; readonly account: RpcResponse; readonly rateLimits: RpcResponse }
-  | { readonly kind: "failed"; readonly reason: string }
-> {
-  return new Promise((resolve) => {
-    const child = spawn(input.command, ["app-server"], {
-      env: { ...process.env, CODEX_HOME: input.account },
-      cwd: tmpdir(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const answers = new Map<number, RpcResponse>();
-    let stderr = "";
-    let pending = "";
-    let settled = false;
-    const settle = (outcome: Parameters<typeof resolve>[0]) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.kill();
-      resolve(outcome);
-    };
-    const timer = setTimeout(() => settle({ kind: "failed", reason: `\`codex app-server\` did not answer within ${CLI_TIMEOUT_MS / 1000} s` }), CLI_TIMEOUT_MS);
-    child.on("error", (error) => settle({ kind: "failed", reason: `\`codex app-server\` could not start: ${error.message}` }));
-    child.on("close", (status) => settle({
-      kind: "failed",
-      reason: `\`codex app-server\` exited (${status}) before answering: ${stderr.trim().slice(0, 160)}`,
-    }));
-    child.stderr.setEncoding("utf-8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
-    child.stdout.setEncoding("utf-8").on("data", (chunk: string) => {
-      pending += chunk;
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      for (const line of lines) {
-        // Notifications (`account/updated`, `remoteControl/status/changed`) arrive between responses; only responses have an id.
-        const response = Schema.decodeUnknownOption(RpcResponse)(parseJson(line));
-        if (response._tag === "Some") answers.set(response.value.id, response.value);
-      }
-      const initialized = answers.get(1);
-      if (initialized?.error !== undefined) {
-        settle({ kind: "failed", reason: `\`codex app-server\` refused to initialize: ${initialized.error.message.slice(0, 160)}` });
-        return;
-      }
-      const account = answers.get(REQUEST_ACCOUNT);
-      const rateLimits = answers.get(REQUEST_RATE_LIMITS);
-      if (account !== undefined && rateLimits !== undefined) settle({ kind: "answered", account, rateLimits });
-    });
-    // A dead stdin raises EPIPE here; the `close` above reports why the server went.
-    child.stdin.on("error", () => {});
-    child.stdin.write([
+async function readCodexAccount(account: string, { home, now, findCommand }: AccountContext): Promise<AccountReading> {
+  const command = findCommand({ name: "codex", also: [...appBundles(home), ...extensionBinaries(home)] });
+  if (command === undefined) return { identity: null, limits: savedLimits(account, "`codex` was not found") };
+  // `account/rateLimits/read` is sent without params: older versions refuse any (`invalid type: map, expected unit`).
+  const asked = await askJsonRpc({
+    name: "codex app-server",
+    command,
+    args: ["app-server"],
+    env: { ...process.env, CODEX_HOME: account },
+    cwd: tmpdir(),
+    timeoutMs: CLI_TIMEOUT_MS,
+    messages: [
       { id: 1, method: "initialize", params: { clientInfo: { name: "skill-sync", title: null, version: "1" }, capabilities: null } },
       { method: "initialized" },
       { id: REQUEST_ACCOUNT, method: "account/read", params: {} },
       { id: REQUEST_RATE_LIMITS, method: "account/rateLimits/read" },
-    ].map((message) => JSON.stringify(message) + "\n").join(""));
+    ],
   });
+  if (asked.kind === "failed") return { identity: null, limits: savedLimits(account, asked.reason) };
+  return parseAppServerAnswers({ account: asked.answers.get(REQUEST_ACCOUNT)!, rateLimits: asked.answers.get(REQUEST_RATE_LIMITS)!, now });
 }
+
+const REQUEST_ACCOUNT = 2;
+const REQUEST_RATE_LIMITS = 3;
 
 /** `account/read`'s answer (codex-rs/app-server-protocol/schema/typescript/v2/GetAccountResponse.ts). */
 const AccountResponse = Schema.Struct({

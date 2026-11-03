@@ -8,8 +8,8 @@ import {
   claude, claudeStatePath, estimateSpend, isBedrockModelId, latestSessionCost, parseAuthStatus, parseClaudeState, parseResetTime,
   parseUsageOutput, settingsUseBedrock, type SessionCost,
 } from "./claude";
-import { codex, parseAppServerAnswers, parseCodexLine } from "./codex";
-import { grok, parseGrokUsage } from "./grok";
+import { codex, extensionBinaries, parseAppServerAnswers, parseCodexLine } from "./codex";
+import { grok, parseBillingAnswer, parseGrokUsage } from "./grok";
 import { ACCOUNT_READ_MS, readUsage } from ".";
 
 /**
@@ -554,12 +554,20 @@ while IFS= read -r line; do
   esac
 done
 `);
+  // Answers as \`grok agent stdio\` does: Grok's own command lives in each GROK_HOME.
+  fakeCommand(join(home, ".grok/bin/grok"), `echo "grok $GROK_HOME $*" >> '${log}'
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":1,'*) echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}' ;;
+    *'"id":2,'*) echo '${JSON.stringify(grokBillingAnswer)}' ;;
+  esac
+done
+`);
   const context: Partial<AccountContext> = {
     home,
     now: USAGE_NOW,
     findCommand: ({ name }) => name === "claude" ? claudeCommand : name === "codex" ? codexCommand : undefined,
   };
-  const grokNone: AccountLimits = { state: "none", reason: "only in Grok's interactive /usage" };
   const expected: AccountUsage[] = [
     {
       tool: "claude", home: ".claude", identity: { id: "org-home", email: "home@example.com", plan: "max" },
@@ -573,7 +581,7 @@ done
       tool: "codex", home: ".codex", identity: { id: "a@example.com", email: "a@example.com", plan: "promax" },
       limits: codexAccountLimits, local: { state: "tokens", periodDays: PERIOD_DAYS, count: 0, sessions: 0 },
     },
-    { tool: "grok", home: ".grok", identity: null, limits: grokNone, local: { state: "none" } },
+    { tool: "grok", home: ".grok", identity: null, limits: grokWeekly, local: { state: "none" } },
   ];
   expect(await readUsage(context)).toEqual(expected);
   const runs = () => Bun.file(log).text().then((text) => text.trim().split("\n").sort());
@@ -584,12 +592,13 @@ done
     `claude ${join(home, ".claude-work")} -p /usage --no-session-persistence`,
     `claude ${join(home, ".claude-work")} auth status`,
     `codex ${join(home, ".codex")} app-server`,
+    `grok ${join(home, ".grok")} agent --no-leader stdio`,
   ]);
   // Within ACCOUNT_READ_MS the CLIs are not asked again.
   expect(await readUsage({ ...context, now: USAGE_NOW + ACCOUNT_READ_MS - 1 })).toEqual(expected);
-  expect((await runs()).length).toBe(5);
+  expect((await runs()).length).toBe(6);
   await readUsage({ ...context, now: USAGE_NOW + ACCOUNT_READ_MS });
-  expect((await runs()).length).toBe(10);
+  expect((await runs()).length).toBe(12);
 });
 
 test("a signed-out Claude account is said to be signed out, though `claude auth status` exits 1 for it", async () => {
@@ -600,4 +609,48 @@ test("a signed-out Claude account is said to be signed out, though `claude auth 
   expect(await readUsage({ home, now: USAGE_NOW, findCommand: ({ name }) => name === "claude" ? command : undefined })).toEqual([
     { tool: "claude", home: ".claude-out", identity: null, limits: { state: "none", reason: "signed out" }, local: { state: "none" } },
   ]);
+});
+
+/** `_x.ai/billing`'s answer from Grok 1.0.70 on a SuperGrok Heavy account, 2026-11-01. */
+const grokBillingAnswer = {
+  id: 2,
+  result: {
+    config: {
+      creditUsagePercent: 1,
+      currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-01T02:59:01.704+00:00", end: "2026-11-08T02:59:01.704+00:00" },
+      prepaidBalance: { val: 0 },
+      isUnifiedBillingUser: true,
+      billingPeriodStart: "2026-11-01T02:59:01.704+00:00",
+      billingPeriodEnd: "2026-11-08T02:59:01.704+00:00",
+    },
+    subscription_tier: "SuperGrok Heavy",
+  },
+};
+const grokWeekly: AccountLimits = {
+  state: "reading",
+  asOf: USAGE_NOW,
+  source: "account",
+  windows: [{ name: "weekly", minutes: 7 * 24 * 60, usedPercent: 1, resetsAt: Date.parse("2026-11-08T02:59:01.704Z") }],
+};
+
+test("Grok's `_x.ai/billing` answer reads as a limit named by its period's length; an error or a changed shape is unknown", () => {
+  expect(parseBillingAnswer(grokBillingAnswer, USAGE_NOW)).toEqual(grokWeekly);
+  expect(parseBillingAnswer({ id: 2, error: { message: "Authentication required to fetch billing data" } }, USAGE_NOW))
+    .toEqual({ state: "unknown", reason: "`_x.ai/billing` failed: Authentication required to fetch billing data" });
+  const changed = parseBillingAnswer({ id: 2, result: { config: { creditUsagePercent: "1%" } } }, USAGE_NOW);
+  expect(changed.state).toBe("unknown");
+  expect(changed.state === "unknown" ? changed.reason : "").toStartWith("Grok's `_x.ai/billing` answer changed shape:");
+});
+
+test("Codex's binary is found inside its editor extension, locally and in an editor's remote server folder, newest first", () => {
+  const home = makeHome();
+  const file = process.platform === "win32" ? "codex.exe" : "codex";
+  const older = join(home, ".vscode-server", "extensions", "openai.chatgpt-26.900.1-linux-x64", "bin", "linux-x86_64", file);
+  const newer = join(home, ".vscode", "extensions", "openai.chatgpt-26.1021.22027-darwin-x64", "bin", "macos-x86_64", file);
+  write(older, "");
+  write(newer, "");
+  write(join(home, ".cursor", "extensions", "someone.else-1.0.0", "bin", "x", file), "");
+  utimesSync(older, new Date(1_000_000), new Date(1_000_000));
+  expect(extensionBinaries(home)).toEqual([newer, older]);
+  expect(extensionBinaries(makeHome())).toEqual([]);
 });

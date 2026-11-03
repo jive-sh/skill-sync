@@ -2,30 +2,89 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { Result, Schema } from "effect";
-import type { LocalUse } from "../wire";
-import { DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, type AgentTool } from "./agent-tool";
+import type { AccountLimits, LocalUse } from "../wire";
+import { CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, windowName, type AgentTool } from "./agent-tool";
+import { askJsonRpc, type RpcResponse } from "./command";
 
 /**
  * Grok. Each account is a `GROK_HOME` (`~/.grok`, `~/.grok-<name>`), and Grok's docs name its `skills`
  * folder as where it reads a user's skills. Grok also reads `~/.agents/skills`, undocumented; a skill in
  * both loads once, from the Grok home (checked with `grok inspect`, Grok 1.0.70).
  *
- * Usage is what `grok usage <session-id>` prints, the command Grok's docs say to use instead of reading
- * session files: each session's token and cost totals (`costUsdTicks`, 10^10 per US dollar). The line sums
- * sessions active in the last `PERIOD_DAYS` days. A session's totals include history it inherited by
- * resume or fork, so a fork counts that part twice. Grok's plan allowance is only in its interactive
- * `/usage`, and `grok` has no command that says who is signed in, so no limit or account is shown.
+ * - Account: the plan allowance comes from `grok agent stdio`, the same way Grok's `/usage` screen gets it
+ *   (`readGrokLimits`). `grok` has no command that says who is signed in, so no account is shown.
+ * - This machine: what `grok usage <session-id>` prints, the command Grok's docs say to use instead of
+ *   reading session files: each session's token and cost totals (`costUsdTicks`, 10^10 per US dollar),
+ *   summed over sessions active in the last `PERIOD_DAYS` days. A session's totals include history it
+ *   inherited by resume or fork, so a fork counts that part twice.
  */
 export const grok: AgentTool = {
   tool: "grok",
   skillsFolders: (home) => homesNamed(home, "grok").map((account) => join(account, "skills")),
   accounts: (home) => homesNamed(home, "grok"),
-  readAccount: async () => ({
-    identity: null,
-    limits: { state: "none", reason: "only in Grok's interactive /usage" },
-  }),
+  readAccount: async (account, { home, now }) => ({ identity: null, limits: await readGrokLimits({ account, home, now }) }),
   readLocalUse: (account, _home, now) => readGrok(account, now),
 };
+
+// ── The account ─────────────────────────────────────────────────────────────────────────────────────
+
+const REQUEST_BILLING = 2;
+
+/**
+ * `_x.ai/billing`'s answer, as Grok 1.0.70 gives it (its `extensions/billing.rs`): the share of the plan's
+ * allowance used in the current period, which is a week on SuperGrok plans.
+ */
+const BillingAnswer = Schema.Struct({
+  config: Schema.Struct({
+    creditUsagePercent: Schema.Finite,
+    currentPeriod: Schema.Struct({ start: Schema.String, end: Schema.String }),
+  }),
+});
+
+/**
+ * The plan allowance, as Grok's `/usage` screen shows it: that screen asks the agent `_x.ai/billing` over the
+ * Agent Client Protocol, so this asks the same of `grok agent stdio`, which fetches it from grok.com with the
+ * account's own sign-in. Undocumented, so a changed answer reads as unknown rather than as a guess.
+ */
+async function readGrokLimits(input: { readonly account: string; readonly home: string; readonly now: number }): Promise<AccountLimits> {
+  const command = join(input.account, "bin", "grok");
+  if (!existsSync(command)) return { state: "unknown", reason: `Grok's command is not at ${command}` };
+  const asked = await askJsonRpc({
+    name: "grok agent stdio",
+    command,
+    args: ["agent", "--no-leader", "stdio"],
+    env: { ...process.env, GROK_HOME: input.account },
+    cwd: input.home,
+    timeoutMs: CLI_TIMEOUT_MS,
+    messages: [
+      { id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } },
+      { id: REQUEST_BILLING, method: "_x.ai/billing", params: {} },
+    ],
+  });
+  if (asked.kind === "failed") return { state: "unknown", reason: asked.reason };
+  return parseBillingAnswer(asked.answers.get(REQUEST_BILLING)!, input.now);
+}
+
+export function parseBillingAnswer(answer: RpcResponse, now: number): AccountLimits {
+  if (answer.error !== undefined) return { state: "unknown", reason: `\`_x.ai/billing\` failed: ${answer.error.message.slice(0, 160)}` };
+  const decoded = Schema.decodeUnknownResult(BillingAnswer)(answer.result);
+  if (Result.isFailure(decoded)) return unknownShape("Grok's `_x.ai/billing` answer", decoded.failure.issue);
+  const { creditUsagePercent, currentPeriod } = decoded.success.config;
+  const start = Date.parse(currentPeriod.start);
+  const end = Date.parse(currentPeriod.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return { state: "unknown", reason: "Grok's `_x.ai/billing` answer changed shape: its period's start or end is not a time" };
+  }
+  const minutes = Math.round((end - start) / 60_000);
+  return {
+    state: "reading",
+    asOf: now,
+    source: "account",
+    windows: [{ name: windowName(minutes), minutes, usedPercent: creditUsagePercent, resetsAt: end }],
+  };
+}
+
+// ── This machine ────────────────────────────────────────────────────────────────────────────────────
 
 const GrokUsage = Schema.Struct({
   sessionId: Schema.String,

@@ -1,5 +1,6 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { chmodSync, rmSync } from "node:fs";
+import { Cause, Data, Effect, Queue, Stream } from "effect";
 import { CONTROL_SOCKET } from "./config";
 import type { ListedSkill } from "./wire";
 
@@ -41,38 +42,50 @@ export type ControlEvent =
 
 const isFinal = (event: ControlEvent): boolean => event.type !== "open";
 
-/** The daemon is not running, as opposed to running and refusing the request. */
-export class DaemonUnreachable extends Error {}
+/** No daemon is listening on the control socket: it is stopped, or has not started since the install. */
+export class DaemonNotRunning extends Data.TaggedError("DaemonNotRunning")<{ readonly message: string }> {}
 
-/** Sends one request and calls `onEvent` for each event until the final one, which it resolves with. */
-export function request(message: ControlRequest, onEvent: (event: ControlEvent) => void): Promise<ControlEvent> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const socket = createConnection(CONTROL_SOCKET);
-    socket.on("connect", () => socket.write(`${JSON.stringify(message)}\n`));
-    socket.on("error", (cause: NodeJS.ErrnoException) => {
-      if (settled) return;
-      settled = true;
-      reject(cause.code === "ENOENT" || cause.code === "ECONNREFUSED"
-        ? new DaemonUnreachable(`the skill-sync daemon is not running (${cause.code} on ${CONTROL_SOCKET})`)
-        : cause);
-    });
-    readLines(socket, (line) => {
-      const event = JSON.parse(line) as ControlEvent;
-      onEvent(event);
-      if (isFinal(event) && !settled) {
+/** The daemon is running but the request failed: it refused it, answered nonsense, or hung up. */
+export class DaemonFailed extends Data.TaggedError("DaemonFailed")<{ readonly message: string }> {}
+
+/**
+ * Sends one request and streams the daemon's events, ending after the final one. The socket is closed when the
+ * stream ends or is interrupted, so a caller that stops waiting (a time limit on Tab) leaves nothing open.
+ */
+export function requestEvents(message: ControlRequest): Stream.Stream<ControlEvent, DaemonNotRunning | DaemonFailed> {
+  return Stream.callback<ControlEvent, DaemonNotRunning | DaemonFailed>((queue) => Effect.acquireRelease(
+    Effect.sync(() => {
+      let settled = false;
+      const fail = (error: DaemonNotRunning | DaemonFailed) => {
+        if (settled) return;
         settled = true;
-        socket.end();
-        resolve(event);
-      }
-    });
-    socket.on("close", () => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("the daemon closed the connection without answering"));
-      }
-    });
-  });
+        Queue.failCauseUnsafe(queue, Cause.fail(error));
+      };
+      const socket = createConnection(CONTROL_SOCKET);
+      socket.on("connect", () => socket.write(`${JSON.stringify(message)}\n`));
+      socket.on("error", (cause: NodeJS.ErrnoException) => fail(cause.code === "ENOENT" || cause.code === "ECONNREFUSED"
+        ? new DaemonNotRunning({ message: `the skill-sync daemon is not running (${cause.code} on ${CONTROL_SOCKET})` })
+        : new DaemonFailed({ message: cause.message })));
+      readLines(socket, (line) => {
+        if (settled) return;
+        let event: ControlEvent;
+        try {
+          event = JSON.parse(line) as ControlEvent;
+        } catch {
+          return fail(new DaemonFailed({ message: `unexpected answer from the daemon: ${line}` }));
+        }
+        Queue.offerUnsafe(queue, event);
+        if (isFinal(event)) {
+          settled = true;
+          socket.end();
+          Queue.endUnsafe(queue);
+        }
+      });
+      socket.on("close", () => fail(new DaemonFailed({ message: "the daemon closed the connection without answering" })));
+      return socket;
+    }),
+    (socket) => Effect.sync(() => socket.destroy()),
+  ));
 }
 
 /** One request being answered: send events, and end the conversation with a final one. */

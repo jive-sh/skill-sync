@@ -19,9 +19,16 @@ skill-sync login     sign this machine in with your passkey; the daemon starts s
 skill-sync logout    revoke this machine's token and stop syncing
 skill-sync list      list the skills that sync, as the server holds them (needs a sign-in)
 skill-sync add <skill>  put a skill on the synced list, as ticking it on the dashboard does
+skill-sync show <skill> print a synced skill's description and where its copies are on this machine
 skill-sync upgrade   upgrade with the package manager that installed it
 skill-sync version   print the installed version
 ```
+
+Tab completes every command. After `show` it lists the synced skills and after `add` the skills in the
+detected folders that `add` would accept and that are not synced yet, both asked of the daemon when Tab is
+pressed. Tab never starts the daemon: when none is running, or it does not answer within 3 seconds, Tab shows why
+instead. Installing or upgrading turns Tab completion on in your shell; `skill-sync --remove-completion` turns
+it off.
 
 Everything else — which folders sync, unticking skills, renaming computers — is on the
 dashboard.
@@ -100,12 +107,13 @@ reads no credential file, and only the numbers and the account's email leave the
   asked (below).
 - **Codex**: `codex app-server`, the JSON-RPC interface Codex's editors and desktop app use: `account/read` and
   `account/rateLimits/read`.
-- **Grok**: none. Grok's allowance is only in its interactive `/usage`, and it has no command that says who is
-  signed in.
+- **Grok**: `grok agent stdio`, asked `_x.ai/billing`, the request Grok's own `/usage` screen makes. Grok has no
+  command that says who is signed in, so its accounts show as unidentified.
 
 The daemon runs with the service manager's PATH, not your shell's, so it looks for `claude` and `codex` on PATH,
 then in the folders installers put them in (`~/.local/bin`, `~/.bun/bin`, npm's and nvm's global folders,
-Homebrew's), then, for Codex, inside the ChatGPT and Codex desktop apps, which ship one. When a CLI is not found
+Homebrew's), then, for Codex, inside the ChatGPT and Codex desktop apps and Codex's editor extension (VS Code,
+Cursor or Windsurf, locally or on a machine they reach over SSH), which each ship one. When a CLI is not found
 or fails, the limits are what the tool last recorded on this machine, and the dashboard's hover on their age
 says so and why: for Claude, the plan usage it keeps in the account's `.claude.json`; for Codex, the limits it
 recorded with its latest turn in its session files. Those are as old as the tool's last use of the account. An

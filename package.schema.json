@@ -1,0 +1,325 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to this package's generated schema, ./package.schema.json. The dev server writes that file and sets this field."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "module"
+      ]
+    },
+    "scripts": {
+      "type": "object",
+      "properties": {
+        "jive:cicd:get-config": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jive:cicd:build": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jive:cicd:audit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jive:cicd:deploy:plan": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jive:cicd:upload-artifacts": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jive:cicd:deploy": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "jive:cicd:get-config",
+        "jive:cicd:build",
+        "jive:cicd:audit",
+        "jive:cicd:deploy:plan",
+        "jive:cicd:upload-artifacts",
+        "jive:cicd:deploy"
+      ],
+      "allOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "devDependencies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "peerDependencies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "peerDependenciesMeta": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "publishConfig": {
+      "type": "object"
+    },
+    "jive": {
+      "type": "object",
+      "properties": {
+        "cicd": {
+          "type": "object",
+          "properties": {
+            "deploy": {
+              "type": "object",
+              "properties": {
+                "verb": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Verb shown in the deploy job's display name, e.g. \"Deploy to\" or \"Publish Tag\"."
+                },
+                "branches": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "allOf": [
+                        {
+                          "pattern": "^(?!(?:[lL][oO][cC][aA][lL]|[pP][rR][eE][vV][iI][eE][wW])$).+$",
+                          "patternErrorMessage": "\"local\" and \"preview\" are reserved by the pipeline and cannot be deploy environments",
+                          "description": "A deploy target name, e.g. \"Production\" or \"latest\". \"local\" and \"preview\" are reserved."
+                        }
+                      ]
+                    }
+                  },
+                  "description": "Maps each deployable branch to its ordered, non-empty list of target environments, e.g. {\"main\": [\"Staging\", \"Production\"]}. To stop a branch deploying, remove its entry. {} means this package never deploys on a branch push."
+                },
+                "previews": {
+                  "type": "boolean",
+                  "description": "If true, a pull request run — or a manual run on a branch absent from deploy.branches — deploys a \"Preview\" environment after the build."
+                },
+                "sequentially": {
+                  "type": "boolean",
+                  "description": "If true, a branch's environments deploy one at a time, in the order listed, each waiting for the previous to finish. If false, they all deploy at once."
+                }
+              },
+              "required": [
+                "verb",
+                "branches",
+                "previews",
+                "sequentially"
+              ],
+              "additionalProperties": true
+            },
+            "requiredSecrets": {
+              "type": "array",
+              "description": "Secret names the pipeline exports into the environment for the build and deploy hooks, e.g. [\"NPM_TOKEN\"]. A secret absent from this list is never passed through, however it is set on the repository.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "runsOnPullRequests": {
+              "type": "boolean",
+              "description": "If true, opening or pushing to a pull request runs the build and audit pipeline, plus a preview deploy when deploy.previews is also true."
+            },
+            "runsOn": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "group": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "labels": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "group"
+                  ],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "group": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "labels": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "labels"
+                  ],
+                  "additionalProperties": true
+                }
+              ],
+              "description": "Runner for the build and deploy jobs: a string, a string array, or a {group, labels} object — the same shapes GitHub Actions' own \"runs-on\" accepts."
+            }
+          },
+          "required": [
+            "deploy",
+            "runsOnPullRequests",
+            "runsOn"
+          ],
+          "additionalProperties": true
+        },
+        "library": {
+          "type": "object",
+          "properties": {
+            "daemons": {
+              "type": "array",
+              "description": "Every `src/daemons/` entry, by file name without its extension, e.g. [\"ozy-signing-agent\"]. The build fails if this and the files disagree. Each installed copy of the package gets its own registration, so how many daemons run is decided by where the package is installed, not here.",
+              "allOf": [
+                {
+                  "uniqueItems": true,
+                  "minItems": 1,
+                  "maxItems": 1,
+                  "items": {
+                    "enum": [
+                      "skill-sync-daemon"
+                    ]
+                  }
+                }
+              ],
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "provisionWithJive": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "serverUrl": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The Jive server deployment's URL, e.g. \"https://api.jive.sh\"."
+                    }
+                  },
+                  "required": [
+                    "serverUrl"
+                  ],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "null to publish to npm as before, or {\"serverUrl\": …} to have each deploy sign in to the Jive server with the job's GitHub OIDC token and call its packages.provision with that session right before publishing. The deploy fails, publishing nothing, if Jive refuses. Needs `id-token: write`, which the deploy job of Jive's reusable pipeline has."
+            }
+          },
+          "required": [
+            "daemons",
+            "provisionWithJive"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "cicd",
+        "library"
+      ],
+      "additionalProperties": true
+    },
+    "files": false,
+    "exports": false,
+    "repository": false
+  },
+  "required": [
+    "$schema",
+    "name",
+    "version",
+    "license",
+    "scripts",
+    "jive"
+  ],
+  "additionalProperties": true
+}

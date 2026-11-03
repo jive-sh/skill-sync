@@ -181,7 +181,14 @@ export type LocalUse =
     /** `bedrock` when the account's settings or the model IDs its sessions used say so; null when nothing says. */
     readonly provider: "bedrock" | null;
   }
-  | { readonly state: "tokens"; readonly periodDays: number; readonly count: number; readonly sessions: number }
+  | {
+    readonly state: "tokens";
+    readonly periodDays: number;
+    readonly count: number;
+    readonly sessions: number;
+    /** In a total over machines: one machine's could not be read, so the true count is higher. */
+    readonly partial?: true;
+  }
   | { readonly state: "none" }
   | { readonly state: "unknown"; readonly reason: string };
 
@@ -245,8 +252,6 @@ export interface MachineView {
   readonly online: boolean;
   /** The version its connected daemon runs; null while offline, or when the daemon is too old to say. */
   readonly daemonVersion: string | null;
-  /** Each account's usage as its connected daemon last sent it; empty while offline, or from a daemon before 0.5.0. */
-  readonly accounts: ReadonlyArray<AccountUsage>;
   readonly lastSeen: number | null;
   readonly folders: ReadonlyArray<FolderView>;
 }
@@ -268,6 +273,37 @@ export interface Snapshot {
   readonly names: Readonly<Record<string, string>>;
   readonly skills: ReadonlyArray<SyncedSkill>;
   readonly machines: ReadonlyArray<MachineView>;
+  readonly accounts: ReadonlyArray<AccountView>;
+}
+
+/** One machine's latest reading of one account folder, as the service keeps it, offline machines included. */
+export interface MachineAccountReading {
+  readonly machine: string;
+  /** When the machine's daemon last sent this account. */
+  readonly reportedAt: number;
+  readonly usage: AccountUsage;
+}
+
+/**
+ * Which account a dashboard row is: its email, else the id its tool gives, else one folder on one machine,
+ * for an account its tool cannot name (Grok, Amazon Bedrock, signed out).
+ */
+export type AccountKey =
+  | { readonly kind: "email"; readonly email: string }
+  | { readonly kind: "id"; readonly id: string }
+  | { readonly kind: "unidentified"; readonly machine: string; readonly home: string };
+
+/** One account across every machine that has reported it. */
+export interface AccountView {
+  readonly tool: AccountUsage["tool"];
+  readonly key: AccountKey;
+  readonly identity: AccountIdentity | null;
+  /** From the freshest reading any machine sent: the provider counts every machine's use against one limit. */
+  readonly limits: AccountLimits;
+  /** Every machine's local use added up; `partial` when a machine's could not be read. */
+  readonly localTotal: LocalUse;
+  /** Each machine's latest reading, by machine name. */
+  readonly machines: ReadonlyArray<MachineAccountReading>;
 }
 
 /** Dashboard → hub. */

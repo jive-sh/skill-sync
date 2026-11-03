@@ -1,5 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
+import { userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { Schema } from "effect";
 import { parseJson } from "./agent-tool";
@@ -9,7 +10,8 @@ import { parseJson } from "./agent-tool";
  *
  * The daemon is started by the service manager (launchd, systemd, the Windows task scheduler), whose
  * PATH is the system's (`/usr/bin:/bin:/usr/sbin:/sbin` under launchd), not the user's shell's. So a CLI
- * is looked for on PATH and then in the folders its installers put it in.
+ * is looked for on PATH, then in the folders its installers put it in, then on the PATH the user's own
+ * login shell sets up, which covers any installer this list does not name.
  */
 
 /** Where package managers and installers put a user's commands, after PATH. */
@@ -48,13 +50,34 @@ export const isFile = (path: string): boolean => {
 
 /**
  * The first `name` on PATH, then in the install folders, then at the paths in `also` (an app bundle that
- * ships the CLI, an installer's own folder). Undefined when none exists.
+ * ships the CLI, an installer's own folder), then on the login shell's PATH. Undefined when none exists.
  */
 export function findCommand(input: { readonly name: string; readonly home: string; readonly also?: ReadonlyArray<string> }): string | undefined {
   const file = process.platform === "win32" ? `${input.name}.exe` : input.name;
   const onPath = (process.env.PATH ?? "").split(delimiter).filter((folder) => folder !== "");
   const candidates = [...[...onPath, ...installFolders(input.home)].map((folder) => join(folder, file)), ...(input.also ?? [])];
-  return candidates.find(isFile);
+  return candidates.find(isFile) ?? loginShellFolders().map((folder) => join(folder, file)).find(isFile);
+}
+
+/** The login shell's PATH is read once per daemon process: starting the shell takes up to a second. */
+let loginShellPathCache: ReadonlyArray<string> | undefined;
+
+/**
+ * The folders on the PATH the user's login shell sets up (its profile and rc files), as their terminal
+ * sees it. Empty on Windows, whose service PATH is already the user's, and when the shell fails.
+ */
+export function loginShellFolders(): ReadonlyArray<string> {
+  if (loginShellPathCache !== undefined) return loginShellPathCache;
+  loginShellPathCache = process.platform === "win32" ? [] : readLoginShellPath();
+  return loginShellPathCache;
+}
+
+function readLoginShellPath(): string[] {
+  const shell = process.env.SHELL ?? userInfo().shell ?? "/bin/sh";
+  // `env` prints PATH joined by ":" in every shell (fish keeps it as a list internally).
+  const run = spawnSync(shell, ["-l", "-i", "-c", "env"], { encoding: "utf-8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+  const line = (run.stdout ?? "").split("\n").find((entry) => entry.startsWith("PATH="));
+  return line === undefined ? [] : line.slice("PATH=".length).split(":").filter((folder) => folder !== "");
 }
 
 export interface CommandResult {

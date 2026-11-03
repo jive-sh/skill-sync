@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -653,4 +654,16 @@ test("Codex's binary is found inside its editor extension, locally and in an edi
   utimesSync(older, new Date(1_000_000), new Date(1_000_000));
   expect(extensionBinaries(home)).toEqual([newer, older]);
   expect(extensionBinaries(makeHome())).toEqual([]);
+});
+
+test("a command only the login shell's PATH reaches is still found, as under a service manager's bare PATH", () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-sync-shell-"));
+  const bin = join(root, "only-in-shell");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "tool-only-in-shell"), "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(join(root, "shell"), `#!/bin/sh\necho "PATH=/usr/bin:${bin}"\n`, { mode: 0o755 });
+  const run = spawnSync(process.execPath, ["-e", `import { findCommand } from ${JSON.stringify(join(import.meta.dir, "command.ts"))}; console.log(findCommand({ name: "tool-only-in-shell", home: ${JSON.stringify(root)} }) ?? "not found")`],
+    { env: { PATH: "/usr/bin:/bin", SHELL: join(root, "shell"), HOME: root }, encoding: "utf-8" });
+  rmSync(root, { recursive: true, force: true });
+  expect(run.stdout.trim()).toBe(join(bin, "tool-only-in-shell"));
 });

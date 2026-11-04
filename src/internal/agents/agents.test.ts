@@ -667,3 +667,16 @@ test("a command only the login shell's PATH reaches is still found, as under a s
   rmSync(root, { recursive: true, force: true });
   expect(run.stdout.trim()).toBe(join(bin, "tool-only-in-shell"));
 });
+
+test("a command last seen running is found from where it was remembered, once it has exited", () => {
+  const root = mkdtempSync(join(tmpdir(), "skill-sync-remembered-"));
+  const tool = join(root, "app", "private-tool");
+  mkdirSync(join(root, "app"));
+  mkdirSync(join(root, ".jive"));
+  writeFileSync(tool, "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(join(root, ".jive", "skill-sync-commands.json"), JSON.stringify({ "private-tool": tool }));
+  const run = spawnSync(process.execPath, ["-e", `import { findCommand } from ${JSON.stringify(join(import.meta.dir, "command.ts"))}; console.log(findCommand({ name: "private-tool", home: ${JSON.stringify(root)} }) ?? "not found")`],
+    { env: { PATH: "/usr/bin:/bin", SHELL: "/usr/bin/false", HOME: root }, encoding: "utf-8" });
+  rmSync(root, { recursive: true, force: true });
+  expect(run.stdout.trim()).toBe(tool);
+});

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { Schema } from "effect";
 import { parseJson } from "./agent-tool";
 
@@ -11,7 +11,8 @@ import { parseJson } from "./agent-tool";
  * The daemon is started by the service manager (launchd, systemd, the Windows task scheduler), whose
  * PATH is the system's (`/usr/bin:/bin:/usr/sbin:/sbin` under launchd), not the user's shell's. So a CLI
  * is looked for on PATH, then in the folders its installers put it in, then on the PATH the user's own
- * login shell sets up, which covers any installer this list does not name.
+ * login shell sets up, which covers any installer this list does not name. A CLI an app starts from its
+ * own private folder is on none of those; it is found while it runs, and its path is remembered.
  */
 
 /** Where package managers and installers put a user's commands, after PATH. */
@@ -56,7 +57,67 @@ export function findCommand(input: { readonly name: string; readonly home: strin
   const file = process.platform === "win32" ? `${input.name}.exe` : input.name;
   const onPath = (process.env.PATH ?? "").split(delimiter).filter((folder) => folder !== "");
   const candidates = [...[...onPath, ...installFolders(input.home)].map((folder) => join(folder, file)), ...(input.also ?? [])];
-  return candidates.find(isFile) ?? loginShellFolders().map((folder) => join(folder, file)).find(isFile);
+  return candidates.find(isFile)
+    ?? loginShellFolders().map((folder) => join(folder, file)).find(isFile)
+    ?? runningOrRemembered(input.name, input.home);
+}
+
+/** Where each CLI was last seen running: `~/.jive/skill-sync-commands.json`, `{ "codex": "/path/to/codex" }`. */
+const rememberedPath = (home: string) => join(home, ".jive", "skill-sync-commands.json");
+
+function readRemembered(home: string): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(rememberedPath(home), "utf-8"));
+    return typeof parsed === "object" && parsed !== null ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * A running process's executable named `name`, which is then remembered for when none runs; otherwise the
+ * remembered one, if it still exists.
+ */
+function runningOrRemembered(name: string, home: string): string | undefined {
+  const remembered = readRemembered(home);
+  const running = runningExecutables(name).find(isFile);
+  if (running !== undefined) {
+    if (remembered[name] !== running) {
+      try {
+        writeFileSync(rememberedPath(home), JSON.stringify({ ...remembered, [name]: running }, null, 2) + "\n");
+      } catch {
+        // Not remembered: found again the next time it runs.
+      }
+    }
+    return running;
+  }
+  const last = remembered[name];
+  return last !== undefined && isFile(last) ? last : undefined;
+}
+
+/** The executables of running processes named `name`: from `ps` on macOS, `/proc/<pid>/exe` on Linux. */
+export function runningExecutables(name: string): string[] {
+  if (process.platform === "darwin") {
+    const run = spawnSync("/bin/ps", ["-axo", "comm="], { encoding: "utf-8", timeout: 5_000 });
+    return (run.stdout ?? "").split("\n").map((line) => line.trim()).filter((line) => line.startsWith("/") && basename(line) === name);
+  }
+  if (process.platform === "linux") {
+    let pids: string[];
+    try {
+      pids = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry));
+    } catch {
+      return [];
+    }
+    return pids.flatMap((pid) => {
+      try {
+        const exe = readlinkSync(join("/proc", pid, "exe"));
+        return basename(exe) === name ? [exe] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+  return [];
 }
 
 /** The login shell's PATH is read once per daemon process: starting the shell takes up to a second. */

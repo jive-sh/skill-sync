@@ -160,8 +160,8 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   audit hook; a pipeline change, so Alex's decision.
 
 ## Regenerating the Jive design page
-- **By hand:** someone runs `bun run --cwd jive-design-page generate` in the chaine monorepo to refresh
-  `jive-design-page/jive_design.html`, so the page shows stale versions and packages until then.
+- **By hand:** someone runs `bun run --cwd design generate` in jive-sh/jive, checked out in the chaine monorepo, to refresh
+  `design/jive_design.html`, so the page shows stale versions and packages until then.
 - **Should be:** a workflow that regenerates it whenever a package folder changes or a package publishes.
 - **Belongs in:** the local Jive daemon, as an `effect/workflow` definition. Needs Alex's yes: it adds a new mechanism to the daemon.
 
@@ -184,3 +184,55 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   record another product owns by releasing it through that product.
 - **Belongs in:** a DNS resource connector (`jive-abstract-resource-connector-dns`, proposed on the design page),
   installed in @jive-sh/server and called by both abstracts' deploys.
+
+## Testing skill-sync's Tab completion in a real shell
+- **By hand:** for the move onto jive-abstract-library's `Cli` (2026-11-01) an agent drove an interactive zsh
+  with `expect`, its `.zshrc` holding the line `skill-sync --setup-completion` writes and `skill-sync` on PATH
+  pointing at the compiled binary, and pressed Tab after `skill-sync `, `show ` and `add ` against the live
+  daemon, against no daemon, and against a socket that accepts and never answers. `src/internal/cli.test.ts`
+  covers the same cases through `--compgen` with a fake daemon, not a shell.
+- **Should be:** a step in the package's audit that runs the compiled binary's Tab in zsh, bash and fish
+  against a fake daemon on a short socket path (macOS caps a Unix socket path at 104 bytes).
+- **Belongs in:** skill-sync's `jive:cicd:audit`, once jive-abstract-library's pipeline installs those shells
+  (the entry above).
+
+## Firebase project and FCM key for an Expo app's Android push
+- **By hand:** for `@jive-sh/app`'s phone approval (2026-11-01), an agent created GCP and Firebase project `jive-sh`
+  with gcloud and Firebase's REST API, registered Android app `sh.jive.app`, downloaded `google-services.json` into
+  the app, created a key for service account `expo-push@jive-sh.iam.gserviceaccount.com` (role
+  `firebasecloudmessaging.admin`), and uploaded it to EAS as the app's FCM v1 key through Expo's GraphQL API
+  (`createGoogleServiceAccountKey`, `createAndroidAppCredentials`). The Google sign-in for gcloud was Alex's.
+- **Should be:** a deploy that provisions what it deploys to: jive-abstract-app-expo's deploy, with Android push
+  turned on, makes sure the Firebase app and the EAS FCM key exist, through a Google Cloud connector on
+  `@jive-sh/server` that holds the Google credential.
+- **Belongs in:** jive-abstract-app-expo (the provisioning step) and a Google Cloud resource connector installed by
+  `@jive-sh/server`.
+
+## Checking an Expo app's release on the user's path
+- **By hand:** after `@jive-sh/app` 0.5.1 (2026-11-01), an agent downloaded the EAS APK and matched its signing
+  certificate against the fingerprint jive.sh's live `assetlinks.json` grants, loaded the live jive.sh in headless
+  Chromium at desktop size and as a Pixel 7 to see the install QR code and the Install link, and loaded the EAS build
+  page as a phone to confirm it installs with no login.
+- **Should be:** a step after jive-abstract-app-expo's production deploy (or a scheduled check) that does the same and
+  fails the release when the APK's certificate is missing from `assetlinks.json` or the page shows no install link.
+- **Belongs in:** jive-abstract-app-expo's deploy hook, with the browser check in its audit's hook tests.
+
+## Creating a new package's repository and its NPM_TOKEN
+- **By hand:** for jive-abstract-app-github-pages (2026-11-04) an agent ran `gh repo create jive-sh/<name> --public`,
+  then `~/.jive/set-secret ~/.jive/npm-token.json NPM_TOKEN jive-sh/<name>` so its pipeline could publish, then
+  pushed the first commit.
+- **Should be:** the package's first deploy provisions its code repository and npm package through @jive-sh/server,
+  and publishes with the server's npm connection, so no repository holds `NPM_TOKEN`.
+- **Belongs in:** the code repository and package registry connectors (`jive provision`), called by
+  jive-abstract-library's deploy.
+
+## Setting a repository's GitHub Pages source
+- **By hand:** jive-abstract-app-github-pages publishes a site to `gh-pages` and requests its build, but a repository
+  whose Pages site does not exist, or whose source is not `gh-pages` at `/`, fails the deploy until a repository
+  administrator sets it at `https://github.com/<owner>/<repo>/settings/pages`. "Enforce HTTPS" is set the same way.
+  A job's token cannot have the Administration permission those settings need. jive-sh/docs was set up by hand.
+- **Should be:** the deploy creates or corrects the Pages site (`POST`/`PUT /repos/{owner}/{repo}/pages`:
+  `build_type: legacy`, source `gh-pages` `/`, `https_enforced` once the certificate exists) through a credential
+  that holds Administration and Pages write on the repository.
+- **Belongs in:** a GitHub resource connector installed in @jive-sh/server, called by
+  jive-abstract-app-github-pages's deploy.

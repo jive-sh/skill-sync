@@ -7,7 +7,7 @@ import type { ListedSkill } from "./wire";
 /**
  * The channel between the CLI and the running daemon.
  *
- * The daemon owns the sync token: it receives it from the browser and keeps it in `~/.jive/`, so it never
+ * The daemon owns the sync token: it claims it from the server once a passkey approves its sign-in, and keeps it in `~/.jive/`, so it never
  * passes through the CLI. The CLI's `login`, `logout`, `list` and `add` are requests to the daemon over this
  * channel. Messages are newline-delimited JSON; each request gets events until one that
  * ends it.
@@ -19,10 +19,12 @@ export type ControlRequest =
   /** The synced list, which the daemon fetches from the server with its token. */
   | { readonly type: "list" }
   /** Puts a skill on this machine on the synced list, after checking its files (`checkSkillToAdd`). */
-  | { readonly type: "add"; readonly skill: string };
+  | { readonly type: "add"; readonly skill: string }
+  /** Hands one feedback item to this machine's skill refinement workflow: a few words naming it, and its text. */
+  | { readonly type: "feedback"; readonly slug: string; readonly text: string };
 
 export type ControlEvent =
-  /** Sign-in has started: the CLI opens this URL in the browser, where the passkey is verified. */
+  /** Sign-in has started: the page that approves it with a passkey, from a browser on this computer or any other. */
   | { readonly type: "open"; readonly url: string }
   | { readonly type: "signedIn"; readonly machine: string }
   | { readonly type: "signedOut"; readonly revoked: boolean }
@@ -38,6 +40,8 @@ export type ControlEvent =
     readonly folders: ReadonlyArray<string>;
     readonly syncingFolders: ReadonlyArray<string>;
   }
+  /** The item is in the workflow's intake, under this id. */
+  | { readonly type: "feedbackAdded"; readonly id: string }
   | { readonly type: "error"; readonly message: string };
 
 const isFinal = (event: ControlEvent): boolean => event.type !== "open";

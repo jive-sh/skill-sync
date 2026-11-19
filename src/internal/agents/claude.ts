@@ -4,7 +4,7 @@ import { join, sep } from "node:path";
 import { Result, Schema, SchemaIssue } from "effect";
 import type { AccountIdentity, AccountLimits, LocalUse, Money, UsageWindow } from "../wire";
 import {
-  CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
+  CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, USD_MICROS, homesNamed, inSessionOrder, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
   type AccountContext, type AccountReading, type AgentTool,
 } from "./agent-tool";
 import { runCommand } from "./command";
@@ -120,8 +120,9 @@ export function parseAuthStatus(stdout: string): AuthStatus {
 
 /**
  * One limit line of `/usage`, as Claude Code 2.1.316 prints it:
- * `Current week (all models): 21% used · resets Nov 3 at 4pm (America/Los_Angeles)`. The reset part is
- * absent while no window is running.
+ * `Current week (all models): 21% used · resets Nov 3 at 4pm (America/Los_Angeles)`, and 2.1.326:
+ * `Current week (Fable): 0% used · resets Nov 18, 12am (UTC)`. The zone is the machine's IANA zone. The
+ * reset part is absent while no window is running.
  */
 const USAGE_LINE = /^Current (session|day|week|month)(?: \(([^)]+)\))?: (\d+(?:\.\d+)?)% used(?: · resets (.+) \(([^()]+)\))?$/;
 
@@ -150,8 +151,11 @@ export function parseUsageOutput(stdout: string, now: number): AccountLimits {
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-/** `Nov 3 at 4pm`, `Nov 1 at 3:40am`, `Nov 3, 2027 at 4pm`, or a time alone for later today. */
-const RESET_TIME = /^(?:([A-Z][a-z]{2}) (\d{1,2})(?:, (\d{4}))? at )?(\d{1,2})(?::(\d{2}))?(am|pm)$/;
+/**
+ * `Nov 3 at 4pm`, `Nov 1 at 3:40am`, `Nov 3, 2027 at 4pm` (2.1.316), `Nov 18, 6am`, `Nov 17, 1:09pm`
+ * (2.1.326), or a time alone for later today.
+ */
+const RESET_TIME = /^(?:([A-Z][a-z]{2}) (\d{1,2})(?:, (\d{4}))?(?: at |, ))?(\d{1,2})(?::(\d{2}))?(am|pm)$/;
 
 /**
  * A reset time as `/usage` prints it, a wall-clock time in a named time zone, in milliseconds since the
@@ -340,7 +344,7 @@ export function latestSessionCost(file: { readonly path: string; readonly modifi
 
 
 /**
- * The sum over sessions last active within the period. A session's saved cost covers the whole session, so
+ * Each session last active within the period, once. A session's saved cost covers the whole session, so
  * a resumed one counts once, at its latest save, and a session forked from another carries the cost it
  * started with, so the sum can count that part twice.
  */
@@ -356,13 +360,11 @@ export function estimateSpend(input: { readonly sessions: ReadonlyArray<SessionC
   }
   const counted = [...bySession.values()];
   if (counted.length === 0) return { state: "none" };
-  const usd = counted.reduce((sum, session) => sum + session.costUsd, 0);
   return {
     state: "spend",
-    asOf: Math.max(...counted.map((session) => session.lastActiveAt)),
     periodDays: PERIOD_DAYS,
-    spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 },
-    sessions: counted.length,
+    ...USD_MICROS,
+    sessions: inSessionOrder(counted.map((session) => ({ id: session.sessionId, amount: Math.round(session.costUsd * 10 ** USD_MICROS.exponent), lastActiveAt: session.lastActiveAt }))),
     partial: counted.some((session) => session.partial),
     provider: input.bedrockSetting || counted.some((session) => session.models.some(isBedrockModelId)) ? "bedrock" : null,
   };

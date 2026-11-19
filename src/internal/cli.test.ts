@@ -22,6 +22,7 @@ function fakeDaemon(overrides: Partial<IDaemonControl> = {}): IDaemonControl {
     *logout() { return true; },
     *listSyncedSkills() { return listed; },
     *addSkill() { return { added: true, folders: ["/home/.claude/skills"], syncingFolders: [] }; },
+    *addFeedback() { return "2026-11-17T11-30-00-reply-first"; },
     *startDaemon() {},
     ...overrides,
   };
@@ -141,3 +142,19 @@ test("Tab gives up on a daemon that does not answer within 3 seconds", async () 
   expect(stderr).toBe("\nskill-sync: could not list choices: the skill-sync daemon did not answer within 3 seconds\n");
   expect(Date.now() - started).toBeLessThan(5_000);
 }, 10_000);
+
+test("feedback hands the file's text to the daemon under its slug and prints the item's id", async () => {
+  const file = `${import.meta.dir}/../../.synctest/feedback-item.md`;
+  await Bun.write(file, "His words: \"reply first\". What drew it: a tool call came first.");
+  const handed: Array<{ readonly slug: string; readonly text: string }> = [];
+  const result = await invoke(["feedback", "reply-first", file], fakeDaemon({ *addFeedback(item) { handed.push(item); return "2026-11-17T11-30-00-reply-first"; } }));
+  expect(handed).toEqual([{ slug: "reply-first", text: "His words: \"reply first\". What drew it: a tool call came first." }]);
+  expect(result).toEqual({ stdout: "Added 2026-11-17T11-30-00-reply-first to the skill refinement queue; see it at https://skill-sync.jive.sh/#refinement\n", stderr: "", exitCode: 0 });
+});
+
+test("feedback without a slug and a file says how to call it, and asks nothing of the daemon", async () => {
+  let asked = 0;
+  const result = await invoke(["feedback", "reply-first"], fakeDaemon({ *addFeedback() { asked++; return "x"; } }));
+  expect(asked).toBe(0);
+  expect(result).toEqual({ stdout: "", stderr: "usage: skill-sync feedback <slug> <file>, a few words naming the item and the file holding it\n", exitCode: 1 });
+});

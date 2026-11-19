@@ -31,6 +31,12 @@ class DaemonControlImpl implements IDaemonControl {
     return { added: event.added, folders: event.folders, syncingFolders: event.syncingFolders };
   }
 
+  *addFeedback(item: { readonly slug: string; readonly text: string }): Effect.fn.Return<string, DaemonError> {
+    const event = yield* finalEvent({ type: "feedback", slug: item.slug, text: item.text });
+    if (event.type !== "feedbackAdded") return yield* unexpected(event);
+    return event.id;
+  }
+
   *startDaemon(): Effect.fn.Return<void> {
     const statuses = yield* pipe(daemonStatuses, Effect.catch(() => Effect.succeed([])));
     const ours = statuses.filter((status) => status.registration.packageName === name && status.executableExists);

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { Result, Schema } from "effect";
 import type { AccountLimits, LocalUse } from "../wire";
-import { CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, parseJson, unknownShape, windowName, type AgentTool } from "./agent-tool";
+import { CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, USD_MICROS, homesNamed, inSessionOrder, isDirectory, parseJson, unknownShape, windowName, type AgentTool } from "./agent-tool";
 import { askJsonRpc, type RpcResponse } from "./command";
 
 /**
@@ -110,7 +110,7 @@ function readGrok(account: string, now: number): LocalUse {
   if (sessions.length === 0) return { state: "none" };
   if (!existsSync(command)) return { state: "unknown", reason: `Grok's command is not at ${command}` };
 
-  const totals: Extract<SessionTotals, { kind: "totals" }>[] = [];
+  const totals: (Extract<SessionTotals, { kind: "totals" }> & { readonly id: string })[] = [];
   for (const session of sessions) {
     const cached = sessionCache.get(session.path);
     const result = cached !== undefined && cached.modifiedAt === session.modifiedAt
@@ -119,16 +119,14 @@ function readGrok(account: string, now: number): LocalUse {
     // A failure is asked again next time rather than kept until the session changes.
     if (result.kind !== "failed") sessionCache.set(session.path, { modifiedAt: session.modifiedAt, totals: result });
     if (result.kind === "failed") return { state: "unknown", reason: result.reason };
-    if (result.kind === "totals") totals.push(result);
+    if (result.kind === "totals") totals.push({ ...result, id: session.id });
   }
   if (totals.length === 0) return { state: "none" };
-  const usd = totals.reduce((sum, session) => sum + session.usd, 0);
   return {
     state: "spend",
-    asOf: Math.max(...totals.map((session) => session.updatedAt)),
     periodDays: PERIOD_DAYS,
-    spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 },
-    sessions: totals.length,
+    ...USD_MICROS,
+    sessions: inSessionOrder(totals.map((session) => ({ id: session.id, amount: Math.round(session.usd * 10 ** USD_MICROS.exponent), lastActiveAt: session.updatedAt }))),
     partial: false,
     provider: null,
   };

@@ -210,13 +210,13 @@ test("without a CLI, limits come from the tools' saved records; Codex's latest m
   utimesSync(newer, new Date(NOW - DAY), new Date(NOW - DAY));
   mkdirSync(join(home, ".codex-empty"));
 
-  const noTokens: LocalUse = { state: "tokens", periodDays: PERIOD_DAYS, count: 0, sessions: 0 };
+  const noTokens: LocalUse = { state: "tokens", periodDays: PERIOD_DAYS, sessions: [] };
   expect(await readUsage({ home, now: NOW, findCommand: () => undefined })).toEqual([
     { tool: "claude", home: ".claude", identity: null, limits: { state: "unknown", reason: "`claude` was not found" }, local: { state: "none" } },
     expect.objectContaining({ tool: "claude", home: ".claude-broken", limits: expect.objectContaining({ state: "unknown" }) }),
     { tool: "claude", home: ".claude-work", ...savedClaude("`claude` was not found"), local: { state: "none" } },
     // The older file is outside the period, so only the newer one's tokens count; its limits are still the latest Codex recorded.
-    { tool: "codex", home: ".codex", identity: null, limits: { ...codexReading, cliFailure: "`codex` was not found" }, local: { ...noTokens, count: 288165427, sessions: 1 } },
+    { tool: "codex", home: ".codex", identity: null, limits: { ...codexReading, cliFailure: "`codex` was not found" }, local: { ...noTokens, sessions: [{ id: "rollout-2026-09-06T10-00-00-b", amount: 288165427, lastActiveAt: NOW - DAY }] } },
     { tool: "codex", home: ".codex-empty", identity: null, limits: { state: "unknown", reason: "`codex` was not found" }, local: noTokens },
   ]);
 });
@@ -301,7 +301,7 @@ test("a session's cost is its last saved one, as of the last line with a time be
 const cost = (sessionId: string, costUsd: number, lastActiveAt: number, models: ReadonlyArray<string> = ["claude-opus-5-5"], partial = false): SessionCost =>
   ({ kind: "cost", sessionId, costUsd, lastActiveAt, partial, models });
 
-test("spend sums each session once over the period, as of the newest, in cents", () => {
+test("spend lists each session once over the period, in millionths of a dollar", () => {
   expect(estimateSpend({
     sessions: [
       cost("a", 1.005, NOW - 2 * DAY),
@@ -313,8 +313,9 @@ test("spend sums each session once over the period, as of the newest, in cents",
     bedrockSetting: false,
     now: NOW,
   })).toEqual({
-    state: "spend", asOf: NOW - DAY, periodDays: PERIOD_DAYS, spent: { amountMinor: 351, currency: "USD", exponent: 2 },
-    sessions: 2, partial: false, provider: null,
+    state: "spend", periodDays: PERIOD_DAYS, currency: "USD", exponent: 6,
+    sessions: [{ id: "a", amount: 1_005_000, lastActiveAt: NOW - 2 * DAY }, { id: "b", amount: 2_500_000, lastActiveAt: NOW - DAY }],
+    partial: false, provider: null,
   });
   expect(estimateSpend({ sessions: [cost("old", 100, NOW - 40 * DAY), { kind: "none" }], bedrockSetting: false, now: NOW })).toEqual({ state: "none" });
 });
@@ -358,13 +359,15 @@ test("every Claude account shows this machine's spend; an account with Bedrock o
   write(join(home, ".claude-switched/settings.json"), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: "1" } }));
 
   const asOf = Date.parse("2026-10-25T12:00:00.000Z");
-  const spend = (usd: number, sessions: number, provider: "bedrock" | null): LocalUse =>
-    ({ state: "spend", asOf, periodDays: PERIOD_DAYS, spent: { amountMinor: Math.round(usd * 100), currency: "USD", exponent: 2 }, sessions, partial: false, provider });
+  const spend = (sessions: ReadonlyArray<{ readonly id: string; readonly usd: number }>, provider: "bedrock" | null): LocalUse => ({
+    state: "spend", periodDays: PERIOD_DAYS, currency: "USD", exponent: 6,
+    sessions: sessions.map(({ id, usd }) => ({ id, amount: usd * 1_000_000, lastActiveAt: asOf })), partial: false, provider,
+  });
   const bedrock: AccountLimits = { state: "none", reason: "Amazon Bedrock has no plan limits" };
   expect(await readUsage({ home, now: NOW, findCommand: () => undefined })).toEqual([
-    { tool: "claude", home: ".claude", identity: null, limits: bedrock, local: spend(4.75, 2, "bedrock") },
-    { tool: "claude", home: ".claude-shell", identity: null, limits: { state: "unknown", reason: "`claude` was not found" }, local: spend(0.75, 1, "bedrock") },
-    { tool: "claude", home: ".claude-sub", ...savedClaude("`claude` was not found"), local: spend(40, 1, null) },
+    { tool: "claude", home: ".claude", identity: null, limits: bedrock, local: spend([{ id: "f1", usd: 3.25 }, { id: "f2", usd: 1.5 }], "bedrock") },
+    { tool: "claude", home: ".claude-shell", identity: null, limits: { state: "unknown", reason: "`claude` was not found" }, local: spend([{ id: "s1", usd: 0.75 }], "bedrock") },
+    { tool: "claude", home: ".claude-sub", ...savedClaude("`claude` was not found"), local: spend([{ id: "p1", usd: 40 }], null) },
     { tool: "claude", home: ".claude-switched", identity: null, limits: bedrock, local: { state: "none" } },
   ]);
 });
@@ -388,10 +391,10 @@ esac
   chmodSync(join(account, "bin/grok"), 0o755);
   expect(grok.readLocalUse(account, home, Date.now())).toEqual({
     state: "spend",
-    asOf: Date.parse("2026-11-01T05:26:28Z"),
     periodDays: PERIOD_DAYS,
-    spent: { amountMinor: 137, currency: "USD", exponent: 2 },
-    sessions: 1,
+    currency: "USD",
+    exponent: 6,
+    sessions: [{ id: used, amount: 1_367_104, lastActiveAt: Date.parse("2026-11-01T05:26:28Z") }],
     partial: false,
     provider: null,
   });
@@ -442,6 +445,39 @@ test("`claude /usage` reads as each limit by name, reset times in the zone it na
   const changed = parseUsageOutput("Usage: 21% of your weekly limit\n", USAGE_NOW);
   expect(changed.state === "unknown" && changed.reason).toContain("`claude /usage` changed shape");
   expect(parseUsageOutput("Current week (all models): 21% used · resets soon (America/Los_Angeles)\n", USAGE_NOW).state).toBe("unknown");
+});
+
+/** What `claude -p /usage` printed on a machine whose zone is UTC, Claude Code 2.1.326, at `UTC_USAGE_NOW`. */
+const claudeUsageOutputUtc = `You are currently using your subscription to power your Claude Code usage
+
+Current session: 5% used · resets Nov 17, 1:09pm (UTC)
+Current week (all models): 35% used · resets Nov 17, 11:59pm (UTC)
+Current week (Fable): 0% used · resets Nov 18, 12am (UTC)
+
+What's contributing to your usage?
+Approximate · sessions on this machine only · shares overlap
+`;
+const UTC_USAGE_NOW = Date.parse("2026-11-17T09:26:45Z");
+
+test("`claude /usage` from 2.1.326 reads with a comma before the time, a time with no minutes, and any IANA zone", () => {
+  expect(parseUsageOutput(claudeUsageOutputUtc, UTC_USAGE_NOW)).toEqual({
+    state: "reading",
+    asOf: UTC_USAGE_NOW,
+    source: "account",
+    windows: [
+      { name: "5-hour", minutes: 300, usedPercent: 5, resetsAt: Date.parse("2026-11-17T13:09:00Z") },
+      { name: "weekly", minutes: 10080, usedPercent: 35, resetsAt: Date.parse("2026-11-17T23:59:00Z") },
+      { name: "weekly Fable", minutes: 10080, usedPercent: 0, resetsAt: Date.parse("2026-11-18T00:00:00Z") },
+    ],
+  });
+});
+
+test.each([
+  { name: "an hour with no minutes, in UTC", text: "Nov 18, 6am", timeZone: "UTC", expected: "2026-11-18T06:00:00Z" },
+  { name: "a zone west of UTC", text: "Nov 18, 6am", timeZone: "America/New_York", expected: "2026-11-18T11:00:00Z" },
+  { name: "a zone east of UTC with a half-hour offset", text: "Nov 18, 6:30pm", timeZone: "Asia/Kolkata", expected: "2026-11-18T13:00:00Z" },
+])("a 2.1.326 reset time reads in $name", ({ text, timeZone, expected }) => {
+  expect(parseResetTime({ text, timeZone, now: UTC_USAGE_NOW })).toBe(Date.parse(expected));
 });
 
 test("a reset time without a year is the nearest one; a time alone is the next one; an unknown zone is not guessed", () => {
@@ -580,7 +616,7 @@ done
     },
     {
       tool: "codex", home: ".codex", identity: { id: "a@example.com", email: "a@example.com", plan: "promax" },
-      limits: codexAccountLimits, local: { state: "tokens", periodDays: PERIOD_DAYS, count: 0, sessions: 0 },
+      limits: codexAccountLimits, local: { state: "tokens", periodDays: PERIOD_DAYS, sessions: [] },
     },
     { tool: "grok", home: ".grok", identity: null, limits: grokWeekly, local: { state: "none" } },
   ];

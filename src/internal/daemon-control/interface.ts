@@ -21,8 +21,8 @@ export interface AddedSkill {
  */
 export interface IDaemonControl {
   /**
-   * Signs this machine in. `openSignInPage` is given the page where the passkey is verified, and the method
-   * returns the machine's name once the browser has handed the daemon its token.
+   * Signs this machine in. `openSignInPage` is given the page where a passkey approves the sign-in, on this computer or
+   * any other, and the method returns the machine's name once the daemon has claimed its token.
    */
   login(openSignInPage: (url: string) => Effect.Effect<void>): Effect.fn.Return<string, DaemonError>;
   /** Signs this machine out; returns whether the server revoked the token. */
@@ -31,6 +31,8 @@ export interface IDaemonControl {
   listSyncedSkills(): Effect.fn.Return<ReadonlyArray<ListedSkill>, DaemonError>;
   /** Puts a skill on this machine on the synced list, once the daemon has checked its files. */
   addSkill(skill: string): Effect.fn.Return<AddedSkill, DaemonError>;
+  /** Hands one feedback item to this machine's skill refinement workflow; returns its id in the intake. */
+  addFeedback(item: { readonly slug: string; readonly text: string }): Effect.fn.Return<string, DaemonError>;
   /** Starts this package's registered daemon through its service manager (launchd, systemd or Task Scheduler). */
   startDaemon(): Effect.fn.Return<void>;
 }

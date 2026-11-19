@@ -20,7 +20,10 @@ export interface ListFilesResponse {
   readonly files: ReadonlyArray<RemoteFile>;
 }
 
-/** Taken only when `editedAt` is later than the edit the server holds; refused with 409 otherwise. */
+/**
+ * Taken only when `editedAt` is later than the edit the server holds; refused with 409 otherwise. The edit is
+ * recorded as the token's machine's, so the request does not name one.
+ */
 export interface PutFileRequest {
   readonly path: string;
   /** When the file was edited: its modification time, or for a deletion, when it was noticed. */
@@ -29,8 +32,42 @@ export interface PutFileRequest {
   readonly hash: string | null;
   /** Base64, absent for a delete. */
   readonly content: string | null;
-  readonly machine: string;
 }
+
+/**
+ * `POST /cli/sign-in-requests` with `{ machine }`: a request to sign that machine in, approved with the passkey on
+ * the page at `url`, from this computer or any other. The daemon keeps `claimSecret` in memory and claims the
+ * request with it (`SignInClaim`); `url` carries only the request's id, so whoever sees the page cannot claim it.
+ */
+export interface SignInRequestCreated {
+  readonly url: string;
+  readonly claimSecret: string;
+  readonly expiresAt: number;
+}
+
+/** `POST /cli/sign-in-requests/claim` with `{ claimSecret }`: the machine's token, once, after the passkey approved it. */
+export type SignInClaim =
+  | { readonly state: "pending" }
+  | { readonly state: "approved"; readonly token: string }
+  /** Expired, already claimed, or never created. */
+  | { readonly state: "expired" };
+
+/**
+ * The header every daemon request names its configured machine in (`machine` in `~/.jive/skill-sync.json`).
+ * The service names a machine only from its token's row, and refuses a request whose header names another
+ * machine (`MachineMismatch`), so a token copied from one machine onto another cannot write as the first.
+ */
+export const MACHINE_HEADER = "x-skill-sync-machine";
+
+/**
+ * The service's answer, with status 403, to a request whose `MACHINE_HEADER` is not the machine its token was
+ * issued to. `tokenMachine` is the machine the token belongs to.
+ */
+export interface MachineMismatch {
+  readonly error: string;
+  readonly tokenMachine: string;
+}
+export const MACHINE_MISMATCH_STATUS = 403;
 
 /** Where a folder's sync stands, as the dashboard shows it. `attention` means a cycle failed; `detail` says why. */
 export type FolderState = "idle" | "attention";
@@ -161,14 +198,51 @@ export type AccountLimits =
   | { readonly state: "unknown"; readonly reason: string };
 
 /**
- * What this machine's sessions of the account used over the last `periodDays` days, read from the files
- * the tool writes on this machine. Other machines' use of the same account is not in it.
+ * One session's use as one machine's files record it, keyed by the session id its tool gives it. The same
+ * session can be on several machines, when session files are copied or synced between them; the service
+ * counts it once (`LocalUseTotal`).
+ */
+export interface SessionUse {
+  readonly id: string;
+  /** Cost in the currency's smallest unit for `spend`, tokens for `tokens`. */
+  readonly amount: number;
+  /** When the session was last active, in milliseconds since the epoch. */
+  readonly lastActiveAt: number;
+}
+
+/**
+ * Each session of the account this machine's files show as active over the last `periodDays` days.
  *
- * `spend`: the sum of the tool's own cost figure for each session: Claude Code's estimate at list price,
- * which it saves when a session ends, is cleared, resumed or forked, so a running session counts as of
- * its last save; Grok's, from `grok usage`. `tokens`: the tokens Codex counted, cached input included.
+ * `spend`: the tool's own cost figure for each session: Claude Code's estimate at list price, which it saves
+ * when a session ends, is cleared, resumed or forked, so a running session counts as of its last save; Grok's,
+ * from `grok usage`. `tokens`: the tokens Codex counted, cached input included.
  */
 export type LocalUse =
+  | {
+    readonly state: "spend";
+    readonly periodDays: number;
+    readonly currency: string;
+    readonly exponent: number;
+    readonly sessions: ReadonlyArray<SessionUse>;
+    /** Claude Code could not price a model in at least one session, so the true cost is higher. */
+    readonly partial: boolean;
+    /** `bedrock` when the account's settings or the model IDs its sessions used say so; null when nothing says. */
+    readonly provider: "bedrock" | null;
+  }
+  | {
+    readonly state: "tokens";
+    readonly periodDays: number;
+    readonly sessions: ReadonlyArray<SessionUse>;
+  }
+  | { readonly state: "none" }
+  | { readonly state: "unknown"; readonly reason: string };
+
+/**
+ * Use added up over sessions, each session counted once, as the dashboard shows it: for one machine, the
+ * sessions counted on it; for an account, every machine's. A session found on several machines counts on the
+ * one where it was last active, and on a tie on the machine that reported it first (`groupAccounts`).
+ */
+export type LocalUseTotal =
   | {
     readonly state: "spend";
     /** When the newest session counted was last active. */
@@ -217,12 +291,53 @@ export type DaemonMessage =
     readonly activity?: string;
   }
   /** Every account on the machine, sent on connecting and whenever a number changes. The hub drops entries in the shape daemons before 0.5.0 sent. */
-  | { readonly type: "usage"; readonly accounts: ReadonlyArray<AccountUsage> };
+  | { readonly type: "usage"; readonly accounts: ReadonlyArray<AccountUsage> }
+  /** The machine's skill refinement workflow, sent on connecting and whenever what the dashboard draws changes. */
+  | { readonly type: "refinement"; readonly refinement: Refinement };
 
-/** Hub → daemon. `prefs` replaces what syncs; `changed` means another write landed on the server. */
+/** Hub → daemon. `prefs` replaces what syncs; `changed` means another write landed on the server; `setLimit` comes from the dashboard. */
 export type HubToDaemon =
   | { readonly type: "prefs"; readonly folders: ReadonlyArray<FolderPrefs> }
-  | { readonly type: "changed" };
+  | { readonly type: "changed" }
+  | ({ readonly type: "setLimit" } & LimitChange);
+
+/** Which of a workflow's two limits a dashboard control sets: how many runs it keeps going, or how many may be on an agent at once. */
+export type LimitName = "runs" | "agents";
+
+/** One limit of one workflow on one machine, set from the dashboard: a whole number, or none for the run limit's default. */
+export interface LimitChange {
+  readonly workflow: string;
+  readonly limit: LimitName;
+  readonly value: number | null;
+}
+
+/**
+ * Everything `@jive-sh/workflow-platform`'s `WorkflowsDashboard` draws for one machine: its `WorkflowsPageData` (every
+ * workflow with its queue and limits, and its runs now), and each workflow's figures over the last day, which the dashboard
+ * reads from the service's figures route when a workflow is opened, all read when the daemon reports. The platform defines
+ * each part; only the daemon builds them and only the dashboard reads them, so here they are objects the hub stores as
+ * they are. The machine has no CPU limit, so `cpu.use` is none.
+ */
+export interface RefinementPageData {
+  readonly view: object;
+  readonly runsNow: ReadonlyArray<object>;
+  readonly cpu: { readonly limit: number; readonly use: null };
+  /** Each workflow's `WorkflowFigures`, by its name. */
+  readonly figures: Readonly<Record<string, object>>;
+}
+
+/** A machine's skill refinement workflow: running, with what the dashboard draws, or why not. */
+export type Refinement =
+  | { readonly state: "running"; readonly data: RefinementPageData }
+  | { readonly state: "notRunning"; readonly reason: string };
+
+/** Hub → dashboard, beside the snapshot: one machine's refinement as it last reported it, which outlives its connection. */
+export interface MachineRefinement {
+  readonly type: "refinement";
+  readonly machine: string;
+  readonly reportedAt: number;
+  readonly refinement: Refinement;
+}
 
 export interface SkillView {
   readonly name: string;
@@ -284,6 +399,13 @@ export interface MachineAccountReading {
   readonly usage: AccountUsage;
 }
 
+/** One machine's reading as the dashboard shows it: its local use is the sessions counted on this machine. */
+export interface MachineAccountView {
+  readonly machine: string;
+  readonly reportedAt: number;
+  readonly usage: Omit<AccountUsage, "local"> & { readonly local: LocalUseTotal };
+}
+
 /**
  * Which account a dashboard row is: its email, else the id its tool gives, else one folder on one machine,
  * for an account its tool cannot name (Grok, Amazon Bedrock, signed out).
@@ -300,10 +422,10 @@ export interface AccountView {
   readonly identity: AccountIdentity | null;
   /** From the freshest reading any machine sent: the provider counts every machine's use against one limit. */
   readonly limits: AccountLimits;
-  /** Every machine's local use added up; `partial` when a machine's could not be read. */
-  readonly localTotal: LocalUse;
+  /** Every machine's sessions added up, each session once; `partial` when a machine's could not be read. */
+  readonly localTotal: LocalUseTotal;
   /** Each machine's latest reading, by machine name. */
-  readonly machines: ReadonlyArray<MachineAccountReading>;
+  readonly machines: ReadonlyArray<MachineAccountView>;
 }
 
 /** Dashboard → hub. */
@@ -312,4 +434,6 @@ export type DashboardMessage =
   /** Adds a skill to the synced list, or removes it: one list for every machine and folder. */
   | { readonly type: "setSkill"; readonly skill: string; readonly synced: boolean }
   /** An empty name restores the machine name. */
-  | { readonly type: "renameMachine"; readonly machine: string; readonly name: string };
+  | { readonly type: "renameMachine"; readonly machine: string; readonly name: string }
+  /** A limit of a machine's workflow, passed to that machine's daemon. */
+  | ({ readonly type: "setLimit"; readonly machine: string } & LimitChange);

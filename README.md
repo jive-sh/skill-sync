@@ -7,10 +7,11 @@ A daemon finds each agent home on the machine (Claude's `~/.claude` and every `~
 `~/.grok` and every `~/.grok-<name>` (each a `GROK_HOME`), and Codex's `~/.agents`, counted as soon as
 either `~/.agents` or `~/.codex` exists; anything named `*.lock` is
 another program's lock and is ignored, as a home and as a file or folder inside a skills folder) and syncs the `skills`
-folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and opens
-`skill-sync.jive.sh` in your browser, where you verify with your jive.sh passkey (from any passkey
-manager, such as Google Password Manager). The service hands a per-machine token straight to the daemon,
-never through the CLI. The daemon keeps it in `~/.jive/skill-sync-token.json` and starts syncing, and it
+folder in each through a Cloudflare Worker: file index in D1, contents in R2 addressed by hash. `skill-sync login` asks the daemon to sign in and prints a
+`skill-sync.jive.sh` page, opening it in your browser when the machine has one. You approve there with your
+jive.sh passkey (from any passkey manager, such as Google Password Manager), on that computer or any other,
+such as your phone, so a server with no browser signs in the same way. The daemon then collects a per-machine
+token from the service with a secret only it holds, never through the CLI or the page. The daemon keeps it in `~/.jive/skill-sync-token.json` and starts syncing, and it
 stays signed in through restarts, reboots and upgrades until you run `skill-sync logout` or revoke the
 token.
 
@@ -20,6 +21,7 @@ skill-sync logout    revoke this machine's token and stop syncing
 skill-sync list      list the skills that sync, as the server holds them (needs a sign-in)
 skill-sync add <skill>  put a skill on the synced list, as ticking it on the dashboard does
 skill-sync show <skill> print a synced skill's description and where its copies are on this machine
+skill-sync feedback <slug> <file>  hand one feedback item to this machine's skill refinement workflow
 skill-sync upgrade   upgrade with the package manager that installed it
 skill-sync version   print the installed version
 ```
@@ -57,16 +59,22 @@ restarts on it, still signed in. `skill-sync upgrade` does the same at once.
 
 ## The dashboard
 
-`https://skill-sync.jive.sh/` shows, live, the latest version published on npm, and:
+`https://skill-sync.jive.sh/` shows, live, the latest version published on npm, and three tabs (the address keeps the
+one open, `#accounts`, `#computers` or `#refinement`):
 
 - **Accounts**: a table with one row per Claude, Codex and Grok account on the running computers.
   An account its tool can name (Claude's organization, Codex's email) is one row however many computers use
   it. Each limit gets a column with the share used and the time to its reset; then each computer's own use of
   the account over the last 30 days, and when the limits were read. See [Account usage](#account-usage).
-- **Synced skills**: the list, with the shared version of each skill and where it was last edited.
-- **Computers**: each machine (renameable), whether its daemon is running and which version it runs, its
-  skills folders, and the skills in each with their files. A daemon older than the published version is
-  marked "update pending"; it upgrades itself within 5 minutes.
+- **Skills & computers**: the synced skills, with the shared version of each and where it was last edited; then each
+  machine (renameable), whether its daemon is running and which version it runs, and its skills folders, one line
+  each with its checkbox, state and counts (synced, not synced, and how many synced skills differ here). Opening a
+  folder lists its skills and their files. A daemon older than the published version is marked "update pending"; it
+  upgrades itself within 5 minutes.
+- **Skill refinement**: each machine's skill refinement workflow (below), drawn by
+  [`@jive-sh/workflow-platform`](https://www.npmjs.com/package/@jive-sh/workflow-platform)'s own dashboard: its queue,
+  where each run is and every step's tokens, spend and time over the last day, with − / + for its run and agent limits,
+  which go to that machine's daemon. An offline machine shows what it last reported; one that runs no workflow says why.
 
 Every file shows the first 8 characters of its SHA-256, amber when a folder's copy differs from the synced
 one. The page reloads itself when a new version of the service is deployed.
@@ -132,15 +140,48 @@ account using Amazon Bedrock or an API key has no plan limits.
 - **Grok**: what `grok usage <session-id>` reports, summed over sessions active in the period. A session's
   totals include history it inherited by resume or fork, so a fork counts that part twice.
 
+The daemon sends each session's figure with the session's id, and the dashboard counts every session once. A
+session found on several computers, because its files were copied or synced between them, counts on the computer
+where it was last active, so a session resumed elsewhere moves there with its whole cost. When the computers agree
+on that time, as they do for copied files, it counts on the computer that reported it first, which is where it ran.
+
 A limit whose reset time has passed since the reading shows no number, since the new window's use is not known
 yet. None of these outputs is a published format: when a tool changes one, the row says "unknown" and why,
-rather than showing a wrong number. Daemons before 0.5.0 send usage in a shape the dashboard no longer takes,
+rather than showing a wrong number. Daemons before 0.7.0 send usage in a shape the dashboard no longer takes,
 so their accounts are not shown until they upgrade themselves.
+
+## Skill refinement
+
+The daemon runs the `autonomous-skill-refinement` skill's workflow: each feedback item an agent hands over becomes a
+tested change to the synced skills, installed into this machine's skills folder, which then syncs everywhere. The
+skill's `SKILL.md` holds the rules each step follows; the workflow itself is in `src/internal/skill-refinement/`.
+
+- **Handing feedback over:** `skill-sync feedback <slug> <file>`, a few words naming the item and a file holding his
+  exact words and what drew them. The daemon adds it to the workflow's intake and the next run takes it.
+- **Where it works from:** the copy of the skill in an agent account folder (`~/.claude-alex/skills/…`): the one in
+  `SKILL_REFINEMENT_CLAUDE_CONFIG_DIR` when that is set, else the one whose `.local/` already holds the workflow's
+  database, else the first Claude account's. Its `.local/` holds the queue, run files and databases; skill-sync never
+  syncs a name starting with a dot, so they stay on the machine. The intakes of every copy on the machine are read.
+- **Models:** Jev, with the key in `TYPESAFE_API_KEY` or the skill folder's `typesafe-api-key` file, classifies and
+  judges; Opus drafts and writes the A/B replies through the `claude` CLI, found as for account usage, on the account
+  that holds the copy.
+- **Taking over from another runner:** while another live process runs the workflow on the same data (the
+  `skill-refinement.service` a machine had before, or a copy started by hand), the daemon waits and checks every
+  minute, so stopping that process hands the work over. It reads that from the engine's own runner records.
+- A machine with no copy of the skill, or no `claude` CLI, runs no workflow; the dashboard says which.
 
 ## Configuration
 
 `~/.jive/skill-sync.json` holds the endpoint and the machine name, written on first run.
 `~/.jive/skill-sync-token.json` holds this machine's token while it is signed in. It is an ordinary file,
 so anything that can read your home directory can copy the token; signing out, or the server rejecting the
-token, deletes it. The CLI reaches the daemon over `~/.jive/skill-sync.sock` (a named pipe on Windows),
+token, deletes it.
+
+Each token is issued to one machine, and the server records everything sent with it (folders, edits, account
+readings) as that machine's. A token copied onto another computer, as when you copy your home folder to a new
+one, is refused there: the server answers that the token belongs to the machine it was issued to, and that
+computer's daemon stops syncing and reporting, logs which machine the token belongs to, and answers `list`,
+`add` and `logout` with the same explanation. Run `skill-sync login` on it to sign it in as itself. Do not run
+`skill-sync logout` there: it would revoke the other machine's token. The daemon refuses to, and so does the
+server. The CLI reaches the daemon over `~/.jive/skill-sync.sock` (a named pipe on Windows),
 which only your user can open.

@@ -1,0 +1,165 @@
+{
+ "source": "The Opus judge of agentic-collaboration/evals (run.ts) grading the original reply of each case, copied on 2026-11-16 from evals/.results/original, a folder skill-sync never copies.",
+ "grades": [
+  {
+   "case": "case-01",
+   "pass": false
+  },
+  {
+   "case": "case-02",
+   "pass": true
+  },
+  {
+   "case": "case-03",
+   "pass": false
+  },
+  {
+   "case": "case-04",
+   "pass": true
+  },
+  {
+   "case": "case-05",
+   "pass": false
+  },
+  {
+   "case": "case-06",
+   "pass": true
+  },
+  {
+   "case": "case-07",
+   "pass": false
+  },
+  {
+   "case": "case-08",
+   "pass": true
+  },
+  {
+   "case": "case-09",
+   "pass": false
+  },
+  {
+   "case": "case-10",
+   "pass": false
+  },
+  {
+   "case": "case-11",
+   "pass": false
+  },
+  {
+   "case": "case-12",
+   "pass": false
+  },
+  {
+   "case": "case-13",
+   "pass": false
+  },
+  {
+   "case": "case-14",
+   "pass": false
+  },
+  {
+   "case": "case-15",
+   "pass": false
+  },
+  {
+   "case": "case-17",
+   "pass": false
+  },
+  {
+   "case": "case-19",
+   "pass": false
+  },
+  {
+   "case": "case-20",
+   "pass": false
+  },
+  {
+   "case": "case-21",
+   "pass": false
+  },
+  {
+   "case": "case-22",
+   "pass": false
+  },
+  {
+   "case": "case-23",
+   "pass": false
+  },
+  {
+   "case": "case-25",
+   "pass": false
+  },
+  {
+   "case": "case-26",
+   "pass": false
+  },
+  {
+   "case": "case-27",
+   "pass": false
+  },
+  {
+   "case": "case-28",
+   "pass": false
+  },
+  {
+   "case": "case-29",
+   "pass": false
+  },
+  {
+   "case": "case-30",
+   "pass": false
+  },
+  {
+   "case": "case-31",
+   "pass": false
+  },
+  {
+   "case": "case-32",
+   "pass": false
+  },
+  {
+   "case": "case-33",
+   "pass": false
+  },
+  {
+   "case": "case-34",
+   "pass": false
+  },
+  {
+   "case": "case-35",
+   "pass": false
+  },
+  {
+   "case": "case-36",
+   "pass": false
+  },
+  {
+   "case": "case-37",
+   "pass": false
+  },
+  {
+   "case": "case-41",
+   "pass": false
+  },
+  {
+   "case": "case-48",
+   "pass": false
+  },
+  {
+   "case": "case-54",
+   "pass": false
+  },
+  {
+   "case": "case-60",
+   "pass": false
+  },
+  {
+   "case": "case-63",
+   "pass": false
+  },
+  {
+   "case": "good-01",
+   "pass": false
+  }
+ ]
+}

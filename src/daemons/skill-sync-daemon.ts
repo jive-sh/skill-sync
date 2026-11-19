@@ -1,19 +1,23 @@
 import { mkdirSync, watch, type FSWatcher } from "node:fs";
-import { createServer } from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { autoUpgrade, exitWhenUninstalled } from "jive-abstract-library";
 import { name, version } from "../../package.json";
 import {
-  TOKEN_PATH, deleteToken, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
+  CONFIG_PATH, TOKEN_PATH, deleteToken, loadSettings, loadStates, loadToken, saveStates, saveToken, stateFor,
   type Config,
 } from "../internal/config";
 import { serve, type ControlRequest, type Reply } from "../internal/control";
 import { describe, register } from "../internal/folders";
-import { authHeaders, fetchServer, TokenRejected } from "../internal/server";
+import { authHeaders, claimSignInRequest, fetchServer, openSignInRequest, TokenOfAnotherMachine, TokenRejected } from "../internal/server";
 import { describeActivity, isQuiet, syncOnce, type Report } from "../internal/sync";
 import { checkSkillToAdd } from "../internal/skill-check";
 import { detectFolders, readUsage } from "../internal/agents";
+import { findCommand } from "../internal/agents/command";
+import { startSkillRefinement, type NotRunning, type SkillRefinementRunner } from "../internal/skill-refinement/service";
 import {
-  DAEMON_VERSION_HEADER, type AddSkillResponse, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListSkillsResponse,
+  DAEMON_VERSION_HEADER, type AddSkillResponse, type DaemonMessage, type FolderPrefs, type FolderState, type HubToDaemon, type ListedSkill,
+  type ListSkillsResponse, type Refinement,
 } from "../internal/wire";
 
 /**
@@ -28,8 +32,8 @@ import {
  * cycle here at once. Polling stays as the fallback: every 5 minutes while connected, every 30 seconds
  * while not, so a dropped connection costs latency and never correctness.
  *
- * `skill-sync login` asks the daemon, over the control socket, to sign in; the token arrives from the
- * browser straight to this process, which keeps it in `~/.jive/skill-sync-token.json` (`TOKEN_PATH`). A
+ * `skill-sync login` asks the daemon, over the control socket, to sign in (`login`); once a passkey approves it, this
+ * process claims the token from the server and keeps it in `~/.jive/skill-sync-token.json` (`TOKEN_PATH`). A
  * daemon that starts and finds that file is signed in, so a restart, a reboot or an upgrade needs no
  * sign-in. Signing out, or the server rejecting the token, deletes the file.
  *
@@ -37,6 +41,10 @@ import {
  * and its plan limits, asked of the tool's own CLI at most every five minutes, and this machine's use of
  * it, from the files the tool writes. It sends them over the same connection when they change, for the
  * dashboard. No credential is read or sent: the CLIs make the authenticated calls.
+ *
+ * It runs this machine's skill refinement workflow (`startSkillRefinement`): Alex's feedback, handed over with
+ * `skill-sync feedback`, becomes tested changes to the synced skills. It reports the workflow's queue and runs to the hub for
+ * the dashboard's Skill refinement tab, and takes that tab's limit changes.
  *
  * It keeps itself on the latest published version (`autoUpgrade`): every 5 minutes it asks the package
  * manager that installed it whether a newer one is out, installs it the same way, and is restarted on it.
@@ -53,8 +61,12 @@ const RECONNECT_MIN_MS = 5_000;
 const RECONNECT_MAX_MS = 5 * 60_000;
 /** How often this machine's use is read from local files; account limits are asked of the CLIs less often (`ACCOUNT_READ_MS`). */
 const USAGE_READ_MS = 60_000;
-/** How long a sign-in waits for the browser before giving up. */
-const LOGIN_TIMEOUT_MS = 5 * 60_000;
+/** How often a sign-in asks the server whether a passkey has approved it; the server says when it expired. */
+const SIGN_IN_CLAIM_MS = 2_000;
+/** How often the skill refinement workflow's runs and limits are read for the dashboard; sent only when they changed. */
+const REFINEMENT_REPORT_MS = 60_000;
+/** A hub message over this is refused by the platform (1 MiB); the dashboard is told the figures are too big instead. */
+const MAX_REFINEMENT_MESSAGE_BYTES = 900_000;
 
 exitWhenUninstalled();
 
@@ -83,10 +95,18 @@ const watchers = new Map<string, FSWatcher>();
 
 // ── Folders ─────────────────────────────────────────────────────────────────────────────────────────
 
-/** Reports this machine's folders and skills, and adopts the server's answer for what syncs. */
+/**
+ * Reports this machine's folders and skills, and adopts the server's answer for what syncs. The server takes it
+ * only from a token issued to the machine this one is configured as, so the session's first registration is
+ * where that is known.
+ */
 async function registerFolders(): Promise<void> {
-  const request = describe(current());
-  applyPrefs(await register(current(), request));
+  const config = current();
+  const request = describe(config);
+  const first = registered === "";
+  const folders = await register(config, request);
+  if (first) console.log(`signed in as ${config.machine}: the server confirmed the token is this machine's; syncing with ${config.endpoint}`);
+  applyPrefs(folders);
   registered = JSON.stringify(request);
 }
 
@@ -157,6 +177,8 @@ function connect(): void {
     for (const folder of prefs.keys()) report(folder, "idle");
     reportedUsage = "";
     reportUsage();
+    reportedRefinement = "";
+    void reportRefinement();
   };
   ws.onmessage = (event) => {
     const data = String(event.data);
@@ -167,6 +189,7 @@ function connect(): void {
     const message = JSON.parse(data) as HubToDaemon;
     if (message.type === "prefs") applyPrefs(message.folders);
     if (message.type === "changed") void runCycle();
+    if (message.type === "setLimit") setRefinementLimit(message);
   };
   ws.onclose = () => {
     if (socket === ws) socket = undefined;
@@ -229,6 +252,78 @@ async function reportUsage(): Promise<void> {
 
 setInterval(reportUsage, USAGE_READ_MS);
 
+// ── Skill refinement ────────────────────────────────────────────────────────────────────────────────
+
+/** The workflow running here, or why it is not; it runs whether or not the machine is signed in. */
+let refinement: SkillRefinementRunner | NotRunning = { notRunning: "starting" };
+/** What the hub last heard about it, so it is sent again only when something the dashboard draws changed. */
+let reportedRefinement = "";
+
+/** Sends the workflow's state and figures to the hub when they differ from what was last sent. */
+async function reportRefinement(): Promise<void> {
+  if (socket === undefined) return;
+  const runner = refinement;
+  let state: Refinement;
+  try {
+    state = "notRunning" in runner ? { state: "notRunning", reason: runner.notRunning } : { state: "running", data: await runner.pageData() };
+  } catch (cause) {
+    console.error(`skill refinement: could not read its runs and limits: ${describeError(cause)}`);
+    return;
+  }
+  let text = JSON.stringify({ type: "refinement", refinement: state } satisfies DaemonMessage);
+  if (text.length > MAX_REFINEMENT_MESSAGE_BYTES) {
+    console.error(`skill refinement: its figures are ${text.length} bytes, over the hub's limit; sending its state without them`);
+    text = JSON.stringify({ type: "refinement", refinement: { state: "notRunning", reason: `its figures (${text.length} bytes) are too big to send` } } satisfies DaemonMessage);
+  }
+  if (text === reportedRefinement || socket === undefined) return;
+  socket.send(text);
+  reportedRefinement = text;
+}
+
+setInterval(reportRefinement, REFINEMENT_REPORT_MS);
+
+/** A limit set on the dashboard's Skill refinement tab for this machine. */
+function setRefinementLimit(change: Extract<HubToDaemon, { type: "setLimit" }>): void {
+  const runner = refinement;
+  if ("notRunning" in runner) {
+    console.error(`skill refinement: a ${change.limit} limit came from the dashboard, but the workflow is not running here: ${runner.notRunning}`);
+    return;
+  }
+  runner.setLimit({ workflow: change.workflow, limit: change.limit, value: change.value }).then(
+    () => reportRefinement(),
+    (cause) => console.error(`skill refinement: the dashboard's ${change.limit} limit for ${change.workflow} was not set: ${describeError(cause)}`),
+  );
+}
+
+/** The synced list, for the workflow's install guard: the same request `skill-sync list` makes, from this process. */
+async function syncedSkills(): Promise<ReadonlyArray<ListedSkill>> {
+  const config = session;
+  if (config === undefined) throw new Error(signedOutMessage());
+  return await fetchSyncedSkills(config);
+}
+
+async function fetchSyncedSkills(config: Config): Promise<ReadonlyArray<ListedSkill>> {
+  const response = await fetchServer(config, "/skills");
+  if (!response.ok) throw new Error(`GET /skills: ${response.status} ${await response.text()}`);
+  return (await response.json() as ListSkillsResponse).skills;
+}
+
+/** Hands a feedback item to the workflow, for `skill-sync feedback`. */
+function addFeedback(item: { readonly slug: string; readonly text: string }, reply: Reply): void {
+  const runner = refinement;
+  if ("notRunning" in runner) {
+    reply.send({ type: "error", message: `skill refinement is not running on this machine: ${runner.notRunning}` });
+    return;
+  }
+  runner.addFeedback(item).then(
+    (id) => {
+      console.log(`skill refinement: feedback ${id} added`);
+      reply.send({ type: "feedbackAdded", id });
+    },
+    (cause) => reply.send({ type: "error", message: describeError(cause) }),
+  );
+}
+
 // ── Sync cycles ─────────────────────────────────────────────────────────────────────────────────────
 
 let running = false;
@@ -254,10 +349,7 @@ async function runCycle(): Promise<void> {
         // What this folder pushed is pulled into the machine's other folders on the follow-up pass.
         if (result.pushed.length > 0) cycleQueued = true;
       } catch (cause) {
-        if (cause instanceof TokenRejected) {
-          dropRejectedToken(cause);
-          return;
-        }
+        if (endRefusedSession(cause)) return;
         // One failed folder must not end the daemon or the other folders: the usual cause is the network.
         const reason = cause instanceof Error ? cause.message : String(cause);
         console.error(`${folder}: sync failed: ${reason}`);
@@ -267,7 +359,7 @@ async function runCycle(): Promise<void> {
     // A skill created or removed locally changes what the dashboard should list.
     if (registrationStale()) {
       await registerFolders().catch((cause: unknown) => {
-        if (cause instanceof TokenRejected) dropRejectedToken(cause);
+        endRefusedSession(cause);
       });
     }
   } finally {
@@ -294,10 +386,7 @@ async function poll(): Promise<void> {
   try {
     if (registered === "" || registrationStale()) await registerFolders();
   } catch (cause) {
-    if (cause instanceof TokenRejected) {
-      dropRejectedToken(cause);
-      return;
-    }
+    if (endRefusedSession(cause)) return;
     console.error(`could not register folders: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
   await runCycle();
@@ -307,12 +396,13 @@ async function poll(): Promise<void> {
 // ── Signing in and out ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Starts a session with a token from the browser. Registering this machine's folders is the first call
+ * Starts a session with a token just claimed from a sign-in. Registering this machine's folders is the first call
  * that needs the token, so it doubles as the check that the token works: a failure leaves the daemon
  * signed out, not half-running, and the token unsaved.
  */
 async function signIn(token: string): Promise<void> {
   if (session !== undefined) await signOut();
+  tokenOfAnotherMachine = undefined;
   session = { ...settings!, token };
   try {
     await registerFolders();
@@ -321,7 +411,6 @@ async function signIn(token: string): Promise<void> {
     throw cause;
   }
   saveToken(token);
-  console.log(`signed in as ${session.machine}; syncing with ${session.endpoint}`);
   connect();
   void poll();
 }
@@ -329,21 +418,24 @@ async function signIn(token: string): Promise<void> {
 /**
  * Starts a session with the token saved by an earlier sign-in. Not checked first, unlike `signIn`: at boot
  * the network may not be up yet, and a failure for that reason must not sign the machine out. The first
- * poll registers; a rejected token signs out there.
+ * poll registers, which is when the server says whose token it is: a rejected token signs out there, and
+ * one issued to another machine stops the session (`endRefusedSession`).
  */
 function resume(token: string): void {
   session = { ...settings!, token };
-  console.log(`signed in as ${session.machine} with the token in ${TOKEN_PATH}; syncing with ${session.endpoint}`);
+  console.log(`resuming as ${session.machine} with the token in ${TOKEN_PATH}; checking it with ${session.endpoint}`);
   connect();
   void poll();
 }
 
-/** Stops syncing and forgets the token, here and in `TOKEN_PATH`. Returns the session that ended. */
-function endSession(): Config | undefined {
+/**
+ * Stops syncing and reporting. The token file stays: `endSession` deletes it, and a token found to be another
+ * machine's is left for that machine's sake. Returns the session that stopped.
+ */
+function stopSession(): Config | undefined {
   const config = session;
   if (config === undefined) return undefined;
   session = undefined;
-  deleteToken();
   if (pollTimer !== undefined) clearTimeout(pollTimer);
   socket?.close();
   socket = undefined;
@@ -354,15 +446,53 @@ function endSession(): Config | undefined {
   return config;
 }
 
-/**
- * The server no longer accepts the token, so no request can succeed until someone signs in again. Only
- * when it is this session's token: a request still in flight from before a new sign-in may be rejected too.
- */
-function dropRejectedToken(cause: TokenRejected): void {
-  if (session?.token !== cause.token) return;
-  endSession();
-  console.error(`${cause.message}; signed out and deleted ${TOKEN_PATH}. Run \`skill-sync login\` to sign in again.`);
+/** Stops syncing and forgets the token, here and in `TOKEN_PATH`. Returns the session that ended. */
+function endSession(): Config | undefined {
+  const config = stopSession();
+  if (config !== undefined) deleteToken();
+  return config;
 }
+
+/**
+ * Set when the server said the saved token was issued to another machine. The session is stopped and the
+ * token file kept; the CLI's requests are answered with `describeTokenOfAnotherMachine` until a sign-in.
+ */
+let tokenOfAnotherMachine: TokenOfAnotherMachine | undefined;
+
+/** What to tell a person about a token issued to another machine, and the one command that fixes it. */
+const describeTokenOfAnotherMachine = (cause: TokenOfAnotherMachine): string =>
+  `${CONFIG_PATH} names this machine "${cause.configuredMachine}", but the token in ${TOKEN_PATH} was issued to "${cause.tokenMachine}", `
+  + `most likely copied from it. skill-sync stopped syncing and reporting here so this machine does not write as "${cause.tokenMachine}". `
+  + `Run \`skill-sync login\` to sign this machine in as "${cause.configuredMachine}". `
+  + `Do not run \`skill-sync logout\` here: it would revoke "${cause.tokenMachine}"'s token and sign that machine out.`;
+
+/**
+ * Ends the session when the server refused its token: revoked or unknown (`TokenRejected`), it is deleted; issued
+ * to another machine (`TokenOfAnotherMachine`), syncing and reporting stop and the file is kept. Returns whether
+ * `cause` was such a refusal. Only for this session's token: a request still in flight from before a new
+ * sign-in may be refused too.
+ */
+function endRefusedSession(cause: unknown): boolean {
+  if (cause instanceof TokenRejected) {
+    if (session?.token !== cause.token) return true;
+    endSession();
+    console.error(`${cause.message}; signed out and deleted ${TOKEN_PATH}. Run \`skill-sync login\` to sign in again.`);
+    return true;
+  }
+  if (cause instanceof TokenOfAnotherMachine) {
+    if (session?.token !== cause.token) return true;
+    stopSession();
+    tokenOfAnotherMachine = cause;
+    console.error(describeTokenOfAnotherMachine(cause));
+    return true;
+  }
+  return false;
+}
+
+/** Why a request that needs the server cannot be made: no session, or a token that is another machine's. */
+const signedOutMessage = (): string => tokenOfAnotherMachine !== undefined
+  ? describeTokenOfAnotherMachine(tokenOfAnotherMachine)
+  : "this machine is signed out; run `skill-sync login` first";
 
 /** Revokes the token on the server, forgets it, and stops syncing. Returns whether the revoke succeeded. */
 async function signOut(): Promise<boolean> {
@@ -379,9 +509,9 @@ async function signOut(): Promise<boolean> {
 let loginInProgress = false;
 
 /**
- * One sign-in: listen on 127.0.0.1 for the browser to hand over the token, tell the CLI which URL to
- * open, and finish when the token arrives. The browser's login page posts to this listener only, never to
- * an address the request chose, so a page that tricks you into signing in cannot collect the token.
+ * One sign-in: open a sign-in request on the server, tell the CLI the page that approves it, and claim the
+ * request every few seconds until a passkey has approved it, on this computer or any other, or it expires.
+ * The claim secret stays in this process, so only this daemon can collect the token.
  */
 function login(reply: Reply): void {
   if (loginInProgress) {
@@ -389,48 +519,50 @@ function login(reply: Reply): void {
     return;
   }
   loginInProgress = true;
-  const done = (): void => {
+  const fail = (message: string): void => {
     loginInProgress = false;
-    listener.close();
-    clearTimeout(timer);
+    reply.send({ type: "error", message });
   };
-  const listener = createServer((request, response) => {
-    const token = new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("token");
-    response.writeHead(200, { "content-type": "text/html" });
-    response.end(token ? "<p>Signed in. You can close this tab.</p>" : "<p>No token in the redirect.</p>");
-    if (token === null) return;
-    done();
-    signIn(token).then(
-      () => reply.send({ type: "signedIn", machine: settings!.machine }),
-      (cause) => reply.send({ type: "error", message: `the server refused the sign-in: ${cause instanceof Error ? cause.message : String(cause)}` }),
-    );
-  });
-  const timer = setTimeout(() => {
-    done();
-    reply.send({ type: "error", message: "timed out waiting for the browser" });
-  }, LOGIN_TIMEOUT_MS);
-  listener.listen(0, "127.0.0.1", () => {
-    const port = (listener.address() as { port: number }).port;
-    reply.send({ type: "open", url: `${settings!.endpoint}/cli/login?port=${port}&machine=${encodeURIComponent(settings!.machine)}` });
-  });
+  openSignInRequest({ endpoint: settings!.endpoint, machine: settings!.machine }).then(
+    ({ url, claimSecret, expiresAt }) => {
+      reply.send({ type: "open", url });
+      const claim = (): void => {
+        claimSignInRequest({ endpoint: settings!.endpoint, claimSecret }).then(
+          (answer) => {
+            if (answer.state === "pending") return void setTimeout(claim, SIGN_IN_CLAIM_MS);
+            if (answer.state === "expired") return fail("the sign-in expired before it was approved; run `skill-sync login` again");
+            loginInProgress = false;
+            signIn(answer.token).then(
+              () => reply.send({ type: "signedIn", machine: settings!.machine }),
+              (cause) => reply.send({ type: "error", message: `the server refused the sign-in: ${describeError(cause)}` }),
+            );
+          },
+          // The network can drop for a moment while someone fetches their phone; the request outlives it, until it expires.
+          (cause) => Date.now() > expiresAt
+            ? fail(`could not reach the server before the sign-in expired: ${describeError(cause)}`)
+            : void setTimeout(claim, SIGN_IN_CLAIM_MS),
+        );
+      };
+      claim();
+    },
+    (cause) => fail(`could not start a sign-in: ${describeError(cause)}`),
+  );
 }
+
+const describeError = (cause: unknown): string => cause instanceof Error ? cause.message : String(cause);
 
 /** The synced list, from the server: the CLI has no token to ask with, so it asks this daemon. */
 function list(reply: Reply): void {
   const config = session;
   if (config === undefined) {
-    reply.send({ type: "error", message: "this machine is signed out; run `skill-sync login` first" });
+    reply.send({ type: "error", message: signedOutMessage() });
     return;
   }
-  fetchServer(config, "/skills")
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`GET /skills: ${response.status} ${await response.text()}`);
-      reply.send({ type: "list", skills: (await response.json() as ListSkillsResponse).skills });
-    })
+  fetchSyncedSkills(config)
+    .then((skills) => reply.send({ type: "list", skills }))
     .catch((cause: unknown) => {
-      if (cause instanceof TokenRejected) {
-        dropRejectedToken(cause);
-        reply.send({ type: "error", message: "the server rejected this machine's token, so it is signed out; run `skill-sync login`" });
+      if (endRefusedSession(cause)) {
+        reply.send({ type: "error", message: signedOutMessage() });
         return;
       }
       reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` });
@@ -444,7 +576,7 @@ function list(reply: Reply): void {
 function add(skill: string, reply: Reply): void {
   const config = session;
   if (config === undefined) {
-    reply.send({ type: "error", message: "this machine is signed out; run `skill-sync login` first" });
+    reply.send({ type: "error", message: signedOutMessage() });
     return;
   }
   const check = checkSkillToAdd({ skill, folders: detectFolders(), exclude: config.exclude });
@@ -462,9 +594,8 @@ function add(skill: string, reply: Reply): void {
       });
     })
     .catch((cause: unknown) => {
-      if (cause instanceof TokenRejected) {
-        dropRejectedToken(cause);
-        reply.send({ type: "error", message: "the server rejected this machine's token, so it is signed out; run `skill-sync login`" });
+      if (endRefusedSession(cause)) {
+        reply.send({ type: "error", message: signedOutMessage() });
         return;
       }
       reply.send({ type: "error", message: `could not reach the server: ${cause instanceof Error ? cause.message : String(cause)}` });
@@ -473,9 +604,12 @@ function add(skill: string, reply: Reply): void {
 
 function handleControl(message: ControlRequest, reply: Reply): void {
   if (message.type === "login") login(reply);
+  // A token issued to another machine is that machine's sign-in: revoking it would sign that machine out.
+  else if (message.type === "logout" && tokenOfAnotherMachine !== undefined) reply.send({ type: "error", message: signedOutMessage() });
   else if (message.type === "logout") void signOut().then((revoked) => reply.send({ type: "signedOut", revoked }));
   else if (message.type === "list") list(reply);
   else if (message.type === "add") add(message.skill, reply);
+  else if (message.type === "feedback") addFeedback(message, reply);
   else reply.send({ type: "error", message: `unknown request ${JSON.stringify(message)}` });
 }
 
@@ -486,6 +620,20 @@ if (await serve(handleControl) === false) {
 }
 // Only after taking the control socket: a daemon that stands down must not sync, or upgrade, too.
 autoUpgrade({ packageName: name });
+startSkillRefinement({
+  home: homedir(),
+  claudeCommand: findCommand({ name: "claude", home: homedir(), also: [join(homedir(), ".claude", "local", "claude")] }),
+  syncedSkills,
+  onState: (state) => {
+    refinement = state;
+    if ("notRunning" in state) console.log(`skill refinement: ${state.notRunning}`);
+    void reportRefinement();
+  },
+}).catch((cause: unknown) => {
+  refinement = { notRunning: `it could not start: ${describeError(cause)}` };
+  console.error(`skill refinement: ${refinement.notRunning}`);
+  void reportRefinement();
+});
 const savedToken = loadToken();
 if (savedToken !== undefined) resume(savedToken);
 else console.log(`skill-sync daemon for ${settings.machine}; waiting for \`skill-sync login\``);

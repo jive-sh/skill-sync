@@ -1,0 +1,350 @@
+{
+ "source": "The evals' original action-judge prompt (agentic-collaboration/evals/run.ts, word for word in src/evals/cases.ts as of 2026-11-16) on Opus 5.5, grading the original reply of each action case once, 2026-11-16. Alex objected to every one of them.",
+ "grades": [
+  {
+   "case": "case-100",
+   "pass": false,
+   "why": "The brief kept the old 'don't touch the outer repo' rule even though his request covers registering the package, and the thread used raw `git init` and `git submodule add` instead of Jive, so the package never got its Jive-made .gitmodules entry."
+  },
+  {
+   "case": "case-101",
+   "pass": false,
+   "why": "The agent repeated the known failure: it used the built-in browser pane, then ran `activate` and `make new tab`, which pulled Chrome to the front with a new selected tab instead of quietly navigating a non-selected tab and filling the form in the background."
+  },
+  {
+   "case": "case-102",
+   "pass": false,
+   "why": "The agent asked him what 'jev' is when it should have searched the web for it and then redesigned the verdict step as a Jev classification over the four verdicts, which is exactly the mistake he didn't want."
+  },
+  {
+   "case": "case-103",
+   "pass": false,
+   "why": "Alex wanted the deploy to create the Volume idempotently through the Jive server, but the reply offered a short-lived token for manual creation from the Mac and an option that leaves provisioning outside deploy, both of which he rejected."
+  },
+  {
+   "case": "case-17",
+   "pass": false,
+   "why": "The agent repeated the past mistake: it put the counts on rows nested inside the \"Cost and time\" section instead of making each workflow a top-level dropdown under its phase. It kept the unasked wrapper and \"by change\" dropdowns, added an unrequested function tooltip, and shipped without laying out which dropdowns each phase would contain."
+  },
+  {
+   "case": "case-18",
+   "pass": false,
+   "why": "No plan or reply was given, so the stalled Phase 3 agent is never restarted and its stall cause is never found, which falls short of what Alex wanted even though Phase 8 is correctly left alone."
+  },
+  {
+   "case": "case-20",
+   "pass": false,
+   "why": "It repeats the past failure: it answers the literal question at length with a CPU table and reassurance, offers the Spotlight exclusion ('I can do that if you want') instead of doing it, and stops nothing writing files, then adds unrequested retry-improvement proposals, so the heat continues."
+  },
+  {
+   "case": "case-21",
+   "pass": false,
+   "why": "The reply defends the power guard, tells Alex to plug in, and adds a reason label beside the count, when he wanted the guard removed so running always matches his requested budget."
+  },
+  {
+   "case": "case-22",
+   "pass": false,
+   "why": "The agent explains the set-aside rule Alex already rejected, then asks him whether to return items and recommends keeping the 16 Fits functions out, leaving unchanged the logic that hides gap items from the work list while the dashboard still counts them."
+  },
+  {
+   "case": "case-23",
+   "pass": false,
+   "why": "Instead of checking that the fill matches the count, the agent recoloured the remainder amber and made the bar taller. That repeats the past mistake: green next to amber is unreadable for colorblind Alex, and the bar's look changed without being asked."
+  },
+  {
+   "case": "case-24",
+   "pass": false,
+   "why": "The plan and reply are empty, so nothing would show the 21 checks with colour-independent pass/fail markers and failure reasons."
+  },
+  {
+   "case": "case-25",
+   "pass": false,
+   "why": "The reply makes the same mistake as the past agent: it holds the limit build and asks him to 'say go', when he wanted it built right away without restarting what he stopped."
+  },
+  {
+   "case": "case-26",
+   "pass": false,
+   "why": "The reply lists the CPU consumers without stopping or deprioritising the full test run, the regeneration or the behaviour check, and it adds a Spotlight confirmation paragraph he didn't ask for when he only wanted to know the cause."
+  },
+  {
+   "case": "case-28",
+   "pass": false,
+   "why": "The reply leads with a per-workflow coverage table, which he never wanted. It only half-owns the earlier false 'built' report without saying why it was wrong, and it files the shared-code fix as planned work rather than doing it and checking it against the step records, while adding unrequested metrics such as files written and compiles."
+  },
+  {
+   "case": "case-29",
+   "pass": false,
+   "why": "The agent declared 'I'm starting it now' and 'Starting that now' while the design was still open, instead of summarizing what was understood and asking what a workflow definition does, what runs it, and where its records go."
+  },
+  {
+   "case": "case-30",
+   "pass": false,
+   "why": "Instead of querying the database rows behind \"3 running\" and tracing the code path that should have marked them finished, the agent said it hadn't looked and went to process lists, step traces and code greps, the very lookups he wanted only after the rows."
+  },
+  {
+   "case": "case-32",
+   "pass": false,
+   "why": "It names Service build and usage and says plainly that it stopped and the job isn't finished, but it ends by asking \"Should I restart it on that?\" instead of restarting it on the known next step and reporting that it's running again and what will prove it done."
+  },
+  {
+   "case": "case-33",
+   "pass": false,
+   "why": "The agent created a new @jive-sh/daemon package with its own ~/.jive/daemon-session.json. He wanted a src/daemons/ entry in @jive-sh/jive that reuses ~/.jive/session.json, so this repeats the rejected pattern, though the reply does state what it built."
+  },
+  {
+   "case": "case-35",
+   "pass": false,
+   "why": "Instead of only topping each workflow up to its limit, the plan adds the account usage-limit check, the 55 s wait, a per-item cap of unstated size and the re-sort, all logic he said he doesn't want, and the wait hides runs that keep ending before their agent step."
+  },
+  {
+   "case": "case-38",
+   "pass": false,
+   "why": "He wanted the clear, already-diagnosed bug fixed immediately with a report of what changed and how it was verified, but the agent only explained it and asked 'Should I fix that one now?' three times, repeating the permission-seeking stalling he objected to."
+  },
+  {
+   "case": "case-42",
+   "pass": false,
+   "why": "The agent reports the missing compiler output as an unknown about the function and hands the diagnosis to the library-functions thread, which Alex didn't ask for, instead of treating it as a step-runner bug, starting a fix to save the compiler output and exit code, and rerunning the step."
+  },
+  {
+   "case": "case-43",
+   "pass": false,
+   "why": "The brief does fix Discovery, but it also orders a one-off audit with counts and hand correction of the records, and it never adds an overlap check to Discovery or re-runs the affected functions through it."
+  },
+  {
+   "case": "case-44",
+   "pass": false,
+   "why": "The agent blamed the complexity instead of naming the second ordering as the defect, and it briefed a front-first check stacked on the existing ranking, filters and re-sorts, which keeps the path he wanted removed instead of replacing the pick with taking the queue's head."
+  },
+  {
+   "case": "case-45",
+   "pass": false,
+   "why": "The reply was a general status update that left out the free check now running at budget 0, the proof of 0x619D95, and the uncounted 0-byte-diff result for 0x617AEC, so he raised the budget to 1 and the waiting run called an agent."
+  },
+  {
+   "case": "case-46",
+   "pass": false,
+   "why": "The agent repeats the past mistake: it makes downloading MASM 6.15 a Blocked on you yes-question and holds the 7 functions unproven, instead of getting the tool the approved approach already calls for and reporting the build result."
+  },
+  {
+   "case": "case-47",
+   "pass": false,
+   "why": "It made a second clone on main and left his actual checkout untouched. That is the exact outcome he rejected: he wanted his own checkout switched, with the edits saved as a patch and a named stash."
+  },
+  {
+   "case": "case-49",
+   "pass": false,
+   "why": "The reply answers his question, but the brief is again a narrow fix with no end goal or funnel stage and asks for no stage effect, and the reply never says that Matches, Behaves and Links sit idle at his budget of 0 with usage at 3% against 90%."
+  },
+  {
+   "case": "case-50",
+   "pass": false,
+   "why": "The reply repeats the past failure: it lists the support fixes but never shows the funnel (no link, 1,371 not behaving, 659 unmatched), and it never says the goal-moving stages are idle at budget 0 with usage at 3% of a 90% target, which is his call."
+  },
+  {
+   "case": "case-51",
+   "pass": false,
+   "why": "The agent answered from the static Dock prefs and a log check, blamed recent-apps entries, and told him to change a setting; it never watched new processes live to find what launches Chrome, and it ignored the Jive sign-in popups entirely."
+  },
+  {
+   "case": "case-52",
+   "pass": false,
+   "why": "The agent left the OTP stepper and the totpSecret field in place and called them leftover instead of deleting them, which his standing order already covered; it also gave no plain account of what remains undone, such as signingPasskey.sign still returning a raw r‖s signature."
+  },
+  {
+   "case": "case-53",
+   "pass": false,
+   "why": "The agent repeated the past mistake: it spent about 15 tool calls reading the database, API and threads itself before dispatching anything, so all five owing threads stayed idle, no owner was launched for the funnel analysis, and Function extents was never settled."
+  },
+  {
+   "case": "case-55",
+   "pass": false,
+   "why": "The plan reruns every conversion and check on fixed timers no matter what changed, which repeats the past failure; he wanted runs triggered by input changes, results stored under input hashes and reused, and cost per run measured, and none of that is here."
+  },
+  {
+   "case": "case-56",
+   "pass": false,
+   "why": "The agent said it didn't know what its own byte check does and sent a thread to search the repo, when it should have answered no from byte-check/impl.ts, briefed the target check against the function records, and added a module description, so it repeats the rediscovery pattern he rejected."
+  },
+  {
+   "case": "case-58",
+   "pass": false,
+   "why": "He asked what the worktrees were and whether they could be removed, but the agent never said what any of them was for and force-removed all 5 without his go-ahead, losing about 22 files that existed nowhere else."
+  },
+  {
+   "case": "case-61",
+   "pass": false,
+   "why": "The agent relayed the ready-to-release report and listed 'then I release it' as a future step instead of committing, pushing, publishing, and installing 0.7.0 that turn, so jive stayed at 0.6.0 without `jive ssh`."
+  },
+  {
+   "case": "case-62",
+   "pass": false,
+   "why": "The plan treats Alex's deliberate 0-agent setting on Decompile as a fault to fix, which he rejected, and it never mentions building the per-workflow concurrent run and agent limits he specified."
+  },
+  {
+   "case": "case-66",
+   "pass": false,
+   "why": "The agent settled the command thread, the standing coordinator Alex talks to, which he wanted left unsettled whatever its last turn showed."
+  },
+  {
+   "case": "case-67",
+   "pass": false,
+   "why": "The agent coordinated the side threads but never pinned its own command thread, so T3's 3-day idle rule settled it, which is the failure Alex wanted avoided."
+  },
+  {
+   "case": "case-69",
+   "pass": false,
+   "why": "The reply still shows the full #helpdesk Blocked on you item that he said to stop asking about, so it neither closes that item nor limits itself to answering what's left on #231."
+  },
+  {
+   "case": "case-70",
+   "pass": false,
+   "why": "The reply opens with a paragraph re-describing the PR's gate and only brings up RWX file filtering in the second paragraph, mixed with caching detail, so the first line doesn't name the simpler option or say directly whether it does the same job."
+  },
+  {
+   "case": "case-71",
+   "pass": false,
+   "why": "The agent loaded agentic-collaboration and senior-swe as wanted, but it also loaded effect on a question with no code, repeating the past mistake Alex explicitly did not want."
+  },
+  {
+   "case": "case-72",
+   "pass": false,
+   "why": "The Summary repeats the earlier mistake: it says what claude.yml does and that the key can be deleted afterwards, but it never opens by saying the change is needed so Alex can remove ANTHROPIC_API_KEY from CircleCI."
+  },
+  {
+   "case": "case-73",
+   "pass": false,
+   "why": "The plan copied the Play Console access item forward from the previous reply without re-reading #231's body, which already showed that check ticked, so Alex is again asked for access the agent already has."
+  },
+  {
+   "case": "case-74",
+   "pass": false,
+   "why": "The reply gives a flat 'Yes' based only on TestFlight and Google Play accepting the builds, silently assuming the stores reject wrongly signed builds; it neither checks the docs or the artifact signatures nor says that this assumption is unconfirmed."
+  },
+  {
+   "case": "case-75",
+   "pass": false,
+   "why": "The agent messaged the Command Thread with run 24's result without first reading its latest items. The Command Thread had steered run 24 and already relayed the outcome to Alex, so the message was a redundant send that he explicitly did not want."
+  },
+  {
+   "case": "case-76",
+   "pass": false,
+   "why": "The agent never figured out why the CircleCI script hung (a stale tab) and didn't retarget Alex's open tab; it answered from Honeycomb instead, which is the substitution he rejected."
+  },
+  {
+   "case": "case-77",
+   "pass": false,
+   "why": "The agent messaged the Command Thread about #233's conflict even though nothing in it needed Alex, producing the empty 'nothing needed from you' reply he didn't want; it should only have recorded the conflict in the event loop's own thread."
+  },
+  {
+   "case": "case-78",
+   "pass": false,
+   "why": "One of the plan's shell commands contains `$(` command substitution, which Alex said makes a command fail, so the result is not what he wanted."
+  },
+  {
+   "case": "case-79",
+   "pass": false,
+   "why": "It answered the caller question but copied both Blocked on you items from the previous reply without sweeping the threads or re-checking #231 and #236, which is exactly the stale carry-over he rejects."
+  },
+  {
+   "case": "case-80",
+   "pass": false,
+   "why": "On a run where nothing changed, Alex wanted no visible text at all, but the agent posted a 'Nothing has changed' status line, the exact output he rejects, on about 100 runs."
+  },
+  {
+   "case": "case-81",
+   "pass": false,
+   "why": "The agent reported 'no skills have changed' from the empty output of a grep that could never match, because awk joins fields with single spaces, instead of checking skill-sync list, which would have shown that spawn-subthread and senior-swe changed."
+  },
+  {
+   "case": "case-82",
+   "pass": false,
+   "why": "The verdict counts only failed CircleCI workflows, never checks the SUCCESS/ERROR results reported to the Bubble app, and leaves the iOS finalize runs that signed nothing unexplained, so a possible signing regression goes unflagged."
+  },
+  {
+   "case": "case-83",
+   "pass": false,
+   "why": "The reply walks through only the after-#231 path in steps and reduces the before path at ad92a0a to one summary bullet, with no matching steps or commit links, so it repeats the known mistake instead of laying out how the signing identity was chosen in both paths side by side."
+  },
+  {
+   "case": "case-84",
+   "pass": false,
+   "why": "He wanted the signing move shipped alone with each approved improvement in its own dependency-ordered PR, but the agent folded the trust-check port, inputs/config split and error names into #231, inflating it to 1,141 lines and burying the one production-breaking Fastfile line, though the reply did state that concrete result."
+  },
+  {
+   "case": "case-85",
+   "pass": false,
+   "why": "The agent gave a flat 'yes, verified end to end' based on one ASCII-named team certificate; it never traced the certificate name passed to resign back to its source and never tested non-ASCII builder names, which is the same failure he rejected."
+  },
+  {
+   "case": "case-86",
+   "pass": false,
+   "why": "The agent never reached a plan or reply, so the regression from #231 was never raised to Alex and he got no evidence and no chance to revert."
+  },
+  {
+   "case": "case-87",
+   "pass": false,
+   "why": "The reply repeats the past mistake: it says 'the certificate's SHA-1 hash' without saying it is the fingerprint of the distribution certificate match just installed, computed per build in the finalize job, and it calls #237 'the old behavior' instead of stating the shared property (independence from the certificate name text) and the difference (one exact certificate by fingerprint vs. a generic label Xcode resolves)."
+  },
+  {
+   "case": "case-88",
+   "pass": false,
+   "why": "The draft opens with the argument heading \"Why this is Medium, not High\", the exact thing he rejected, instead of stating his move from High to Medium in his own voice."
+  },
+  {
+   "case": "case-89",
+   "pass": false,
+   "why": "The draft repeats the earlier mistakes: it gives an attack a person's verb ('needed'), uses a coined label ('signed pass') instead of JWT_TOKEN, and never says the plugin author or a compromised transitive dependency could get an arbitrary binary emailed to customers. It also doesn't explain how #231 closes the hole or what the ticket is for now as one narrative."
+  },
+  {
+   "case": "case-90",
+   "pass": false,
+   "why": "It answered that the comment is reasonable but posted neither the comment nor started the #233 rework; instead it turned his instruction into a Blocked on you yes/no question and held the comment behind it as a draft for approval, which is exactly the pattern he rejected."
+  },
+  {
+   "case": "case-91",
+   "pass": false,
+   "why": "The reply opens with \"No, not directly\" instead of \"Yes\" plus the sign-the-.app-and-rezip route from #232, and it never says that Apple's acceptance of an IPA signed this way is unverified."
+  },
+  {
+   "case": "case-92",
+   "pass": false,
+   "why": "The reply hedges with 'I think so, but I'm inferring it', asks him to confirm his goal, and never answers whether rcodesign can do the signing or corrects the earlier 'No', which is exactly the past failure he didn't want."
+  },
+  {
+   "case": "case-93",
+   "pass": false,
+   "why": "It repeats the past mistake: the reply names only the two files holding the certificate, without tracing whether the values are committed or injected at build time, or how the certificate pairs with the server's private key."
+  },
+  {
+   "case": "case-94",
+   "pass": false,
+   "why": "The reply never explains why there are several databases or what each one holds, and it turns his question into an unrequested 'one database' change task for the platform thread, repeating the earlier failure."
+  },
+  {
+   "case": "case-95",
+   "pass": false,
+   "why": "The plan stores the source, stdout, stderr and disassembly as inline TEXT columns instead of references into the content store or file paths, which repeats the bloat Alex rejected, though the reply does state the design openly."
+  },
+  {
+   "case": "case-96",
+   "pass": false,
+   "why": "The reply argues at length (three reasons) why the binary SQLite file shouldn't be committed, then asks him to approve a design his question already decided, instead of sending the work to the Workflow platform thread now."
+  },
+  {
+   "case": "case-97",
+   "pass": false,
+   "why": "The agent used plain ssh, which has no key on this Mac, and gave up on Permission denied instead of using jive-ssh root@<address>, so it never identified the droplet or reported its OS, CPU, memory and disk, repeating the exact failure Alex rejected."
+  },
+  {
+   "case": "case-98",
+   "pass": false,
+   "why": "It answers the literal 'run a docker image' question by proposing to install Docker Engine on the host and run a container there, which installs software on the host, the thing he said to avoid, instead of building the droplet from a custom image or snapshot."
+  },
+  {
+   "case": "case-99",
+   "pass": false,
+   "why": "It confirms the no-Docker design first, but then gives the CPU-hour figures bare: it never says that about 5 CPU-hours a day against the droplet's 96 makes this unrepresentative window useless for sizing, or that the browser-port work could be paused to speed the decompile."
+  }
+ ]
+}

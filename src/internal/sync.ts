@@ -195,8 +195,7 @@ function removeEmptyParents(folder: string, file: string): void {
 }
 
 /** Undefined when the server took the write; otherwise the later version it holds instead. */
-async function put(config: Config, body: Omit<PutFileRequest, "machine">): Promise<ServerVersion | undefined> {
-  const request: PutFileRequest = { ...body, machine: config.machine };
+async function put(config: Config, request: PutFileRequest): Promise<ServerVersion | undefined> {
   const response = await fetchServer(config, "/files", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -206,7 +205,7 @@ async function put(config: Config, body: Omit<PutFileRequest, "machine">): Promi
     const current = await response.json() as { currentHash: string | null; currentEditedAt: number };
     return { hash: current.currentHash, editedAt: current.currentEditedAt };
   }
-  if (!response.ok) throw new Error(`PUT /files ${body.path}: ${response.status} ${await response.text()}`);
+  if (!response.ok) throw new Error(`PUT /files ${request.path}: ${response.status} ${await response.text()}`);
   return undefined;
 }
 

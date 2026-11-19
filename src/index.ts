@@ -7,9 +7,9 @@
  */
 
 export { invalidPathReason, isValidPath } from "./internal/path";
-export { DAEMON_VERSION_HEADER, isSkillName, skillOf } from "./internal/wire";
+export { DAEMON_VERSION_HEADER, MACHINE_HEADER, MACHINE_MISMATCH_STATUS, isSkillName, skillOf } from "./internal/wire";
 export type {
-  AccountIdentity, AccountKey, AccountLimits, AccountUsage, AccountView, MachineAccountReading, AddSkillResponse, DaemonMessage, LocalUse, Money, UsageWindow, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
-  HubToDaemon, ListedSkill, ListFilesResponse, ListSkillsResponse, LocalSkill, MachineView, PutFileRequest, RemoteFile,
-  SkillView, Snapshot, SyncedSkill,
+  AccountIdentity, AccountKey, AccountLimits, AccountUsage, AccountView, MachineAccountReading, MachineAccountView, AddSkillResponse, DaemonMessage, LocalUse, LocalUseTotal, Money, SessionUse, UsageWindow, DashboardMessage, FileHash, FolderPrefs, FolderState, FolderView, FoldersRequest, FoldersResponse,
+  HubToDaemon, ListedSkill, ListFilesResponse, ListSkillsResponse, LocalSkill, MachineMismatch, MachineView, PutFileRequest, RemoteFile, SignInClaim, SignInRequestCreated,
+  LimitChange, LimitName, MachineRefinement, Refinement, RefinementPageData, SkillView, Snapshot, SyncedSkill,
 } from "./internal/wire";

@@ -2,7 +2,7 @@ import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { SchemaIssue } from "effect";
 import { isLock } from "../config";
-import type { AccountIdentity, AccountLimits, AccountUsage, LocalUse } from "../wire";
+import type { AccountIdentity, AccountLimits, AccountUsage, LocalUse, SessionUse } from "../wire";
 
 /**
  * One coding agent skill-sync works with (Claude Code, Codex, Grok): where it reads a user's skills, which
@@ -47,6 +47,19 @@ export interface AccountReading {
 /** Sessions are counted over this many days: Claude Code deletes session files older than 30 days by default. */
 export const PERIOD_DAYS = 30;
 export const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Each session's cost goes out in millionths of a dollar: rounded to cents one by one, a few hundred sessions
+ * would add up to a total off by dollars.
+ */
+export const USD_MICROS = { currency: "USD", exponent: 6 } as const;
+
+/**
+ * Sessions in one order whatever order their files were listed in: the daemon sends usage again only when its text
+ * changes, so an order that varies between readings would resend unchanged figures.
+ */
+export const inSessionOrder = (sessions: ReadonlyArray<SessionUse>): ReadonlyArray<SessionUse> =>
+  [...sessions].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
 /** A CLI asked for an account's limits gets this long to answer. */
 export const CLI_TIMEOUT_MS = 30_000;
 

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { Data, Effect, Schedule, Stdio, Stream, pipe } from "effect";
 import { Cli, upgrade } from "jive-abstract-library";
 import { name, version } from "../../package.json";
@@ -9,13 +10,13 @@ import { DaemonControl, type DaemonError, type IDaemonControl } from "./daemon-c
 import { addableSkills, formatSkillCopies, skillCopies } from "./local-skills";
 
 /**
- * The CLI that accompanies the daemon: `login`, `logout`, `list`, `add`, `show`, `upgrade` and `version`. Which
+ * The CLI that accompanies the daemon: `login`, `logout`, `list`, `add`, `show`, `feedback`, `upgrade` and `version`. Which
  * folders sync is chosen on the dashboard; skills are ticked there too, or added with `add` by the agent that
  * wrote one.
  *
- * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout`, `list` and
- * `add` are requests to it over the control socket; the token goes from the browser straight to the daemon and
- * never through here. Tab after `show` lists the synced skills and Tab after `add` the skills that could be
+ * The daemon owns the sync token and keeps it in `~/.jive/skill-sync-token.json`. `login`, `logout`, `list`,
+ * `add` and `feedback` are requests to it over the control socket; the daemon claims the token from the server itself, so it
+ * never passes through here. Tab after `show` lists the synced skills and Tab after `add` the skills that could be
  * added, both asked of the daemon when Tab is pressed.
  */
 
@@ -29,14 +30,15 @@ const RETRY_INTERVAL = "500 millis";
 const RETRIES = 20;
 
 class SkillNotOnThisMachine extends Data.TaggedError("SkillNotOnThisMachine")<{ readonly message: string }> {}
+class FeedbackNotRead extends Data.TaggedError("FeedbackNotRead")<{ readonly message: string }> {}
 class UpgradeFailed extends Data.TaggedError("UpgradeFailed")<{ readonly message: string }> {}
 
 export const skillSync = Cli.make("skill-sync", {
   login: Cli.command({
-    description: "sign this machine in with your passkey in the browser; it stays signed in until you log out",
+    description: "sign this machine in with your passkey, approved in a browser on this computer or any other; it stays signed in until you log out",
     *run() {
       const machine = yield* withDaemon((daemon) => daemon.login((url) => pipe(
-        Effect.log(`Opening ${url}`),
+        Effect.log(`Approve this sign-in with your passkey at ${url} (in a browser on this computer or any other, such as your phone). Waiting…`),
         Effect.andThen(Effect.sync(() => openBrowser(url))),
       )));
       yield* Effect.log(`Signed in. ${machine} is syncing; choose what syncs at ${DASHBOARD}`);
@@ -107,6 +109,23 @@ export const skillSync = Cli.make("skill-sync", {
     }),
   }),
 
+  feedback: Cli.command({
+    description: "hand one feedback item to this machine's skill refinement workflow: `skill-sync feedback <slug> <file>`, a few words naming it and a file holding his exact words and what drew them",
+    *run({ args }) {
+      const [slug, file] = args;
+      if (slug === undefined || file === undefined || args.length > 2) {
+        return yield* new FeedbackNotRead({ message: "usage: skill-sync feedback <slug> <file>, a few words naming the item and the file holding it" });
+      }
+      const text = yield* Effect.try({
+        try: () => readFileSync(file, "utf-8"),
+        catch: (cause) => new FeedbackNotRead({ message: `could not read ${file}: ${cause instanceof Error ? cause.message : String(cause)}` }),
+      });
+      if (text.trim() === "") return yield* new FeedbackNotRead({ message: `${file} is empty` });
+      const id = yield* withDaemon((daemon) => daemon.addFeedback({ slug, text }));
+      yield* Effect.log(`Added ${id} to the skill refinement queue; see it at ${DASHBOARD}#refinement`);
+    },
+  }),
+
   upgrade: Cli.command({
     description: "upgrade skill-sync to the latest version with the package manager that installed it",
     *run() {
@@ -132,6 +151,7 @@ export function runSkillSync() {
     Effect.catchTags({
       DaemonFailed: report,
       SkillNotOnThisMachine: report,
+      FeedbackNotRead: report,
       UpgradeFailed: report,
     }),
   );
@@ -190,5 +210,8 @@ function openBrowser(url: string): void {
     : process.platform === "win32" ? "cmd"
     : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-  spawn(command, args, { stdio: "ignore", detached: true }).unref();
+  // A machine with no desktop has no opener: the address printed above is how it signs in.
+  const opener = spawn(command, args, { stdio: "ignore", detached: true });
+  opener.on("error", () => undefined);
+  opener.unref();
 }

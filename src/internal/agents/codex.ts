@@ -1,10 +1,10 @@
 import { readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Result, Schema } from "effect";
 import type { AccountLimits, LocalUse, UsageWindow } from "../wire";
 import {
-  CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
+  CLI_TIMEOUT_MS, DAY_MS, PERIOD_DAYS, homesNamed, inSessionOrder, isDirectory, linesFromEnd, parseJson, unknownShape, windowName,
   type AccountContext, type AccountReading, type AgentTool,
 } from "./agent-tool";
 import { askJsonRpc, isFile, type RpcResponse } from "./command";
@@ -209,12 +209,17 @@ function savedLimits(account: string, why: string): AccountLimits {
 
 function localTokens(account: string, now: number): LocalUse {
   const since = now - PERIOD_DAYS * DAY_MS;
-  const totals = sessionFilesNewestFirst(account)
+  const sessions = sessionFilesNewestFirst(account)
     .filter((file) => file.modifiedAt >= since)
-    .map((file) => sessionRecord(file).tokens)
-    .filter((tokens) => tokens !== undefined);
-  return { state: "tokens", periodDays: PERIOD_DAYS, count: totals.reduce((sum, count) => sum + count, 0), sessions: totals.length };
+    .flatMap((file) => {
+      const tokens = sessionRecord(file).tokens;
+      return tokens === undefined ? [] : [{ id: codexSessionId(file.path), amount: tokens, lastActiveAt: file.modifiedAt }];
+    });
+  return { state: "tokens", periodDays: PERIOD_DAYS, sessions: inSessionOrder(sessions) };
 }
+
+/** A session file's name (`rollout-<start time>-<session id>`) names its session, and stays the same when the file is copied to another machine. */
+const codexSessionId = (path: string): string => basename(path, ".jsonl");
 
 function sessionRecord(file: { readonly path: string; readonly modifiedAt: number }): SessionRecord {
   const cached = sessionCache.get(file.path);

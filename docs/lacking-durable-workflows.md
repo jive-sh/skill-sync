@@ -72,16 +72,18 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Belongs in:** jive-abstract-library (it knows the workflow and environment names) calling `@jive-sh/app`.
   ozy-cli's `INpm.ensureTrustedPublisher` already posts to npm's trust endpoint but sets no environment.
 
-## skill-sync-service is deployed and tested by hand
-- **By hand:** the service behind skill-sync.jive.sh lives in `packages/@jive-sh/skill-sync-service` in the chaine
-  checkout, outside git. An agent runs its end-to-end test (`test/e2e.ts`) against a local `wrangler dev`, then
-  deploys with `wrangler deploy` from that checkout. It builds against a local `dist/base` of this package, not a
-  published version. The test checks the hub's data but not the page, so for 0.4.9's account usage an agent
-  connected a test daemon to the local service and screenshotted the dashboard in headless Chrome by hand.
-- **Should be:** the service in its own repo on the Jive pipeline, with the end-to-end test in its audit hook and
-  `wrangler deploy` as its deploy hook, depending on a published @jive-sh/skill-sync. The test drives the
-  dashboard in a headless browser and checks what it renders.
-- **Belongs in:** a new repo for the service, extending an app or service abstract once one exists.
+## skill-sync-service is tested by hand, with hooks of its own
+- **By hand:** jive-sh/skill-sync-service deploys on the Jive pipeline (schema, then `wrangler deploy`), but its
+  audit hook only typechecks. An agent runs the end-to-end test (`test/e2e.ts`) against a local `wrangler dev`,
+  since the test imports this package's source from a sibling checkout. The test checks the hub's data but not
+  the page, so for 0.4.9's account usage an agent connected a test daemon to the local service and screenshotted
+  the dashboard in headless Chrome by hand. No abstract covers Cloudflare Workers, so the service writes its six
+  hooks itself, and its `get-config` prints its `jive` block without validating it. Its `CLOUDFLARE_API_TOKEN`
+  was created in the Cloudflare dashboard and set with `~/.jive/set-secret`.
+- **Should be:** a Cloudflare Worker abstract owning the hooks and the manifest schema, whose deploy provisions the
+  D1 database and R2 bucket and gets its Cloudflare access from @jive-sh/server. The audit hook runs the
+  end-to-end test against the published @jive-sh/skill-sync and drives the dashboard in a headless browser.
+- **Belongs in:** a new `jive-abstract-worker-cloudflare`, extended by skill-sync-service.
 
 ## Cleaning up daemons registered from a build checkout
 - **By hand:** running `dist/base/bin/<command>` to test a local build registers a second daemon from the checkout
@@ -236,3 +238,41 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   that holds Administration and Pages write on the repository.
 - **Belongs in:** a GitHub resource connector installed in @jive-sh/server, called by
   jive-abstract-app-github-pages's deploy.
+
+## Building against an unpublished release of a dependency
+- **By hand:** to build the service's Skill refinement tab against skill-sync's unreleased wire types, an agent
+  copied skill-sync's `dist/base` and current `src` into the service's `node_modules/@jive-sh/skill-sync`, because the
+  service's `^0.7.0` is not published and `bun install` fails on it; the service's other packages (React, elkjs,
+  `@jive-sh/workflow-platform` 0.3.0) were copied in beside it the same way. Before 0.3.0 was published (2026-11-17),
+  skill-sync held such a copy of the platform's open-empires checkout too; it now installs the release. `bun install`
+  replaces the copies once skill-sync is published. For `jive create` (2026-11-18), jive-abstract-library and
+  @jive-sh/jive depend on jive-abstract-abstraction 0.1.0 before it is published: jive-abstract-library was installed
+  from its committed lockfile and built with that devDependency held out of package.json, and @jive-sh/jive's
+  `node_modules/jive-abstract-abstraction` was symlinked to its `dist/base` and run with `NODE_PRESERVE_SYMLINKS=1`
+  so one copy of `effect` loads.
+- **Should be:** the workspace links a package from another workspace's checkout as `jive init` links its own, or a
+  release of the dependency is published to a staging tag the dependent can install.
+- **Belongs in:** `jive load` and `jive init` in @jive-sh/jive.
+
+## Loading a new, empty repository into a workspace
+- **By hand:** `ozyman42/dns` was created empty with `gh repo create --private`. `jive load` reads a repo's package name
+  from its `package.json` before placing it, so it can't load an empty repo. An agent cloned it to
+  `packages/@ozyman42/dns` with git, set by hand the signing config `jive init` sets, pushed the first commit, and only
+  then ran `jive load`, which adopted the checkout. It ran jive 0.9.1 from source (a `git archive` of `b4e0b12`),
+  because the droplet's image installs 0.8.0, whose `load` doesn't place packages at `packages/<package name>`.
+- **Should be:** `jive create` (or `jive provision` with a code-repository kind) makes the repo, its first commit and
+  its submodule entry in one step, with signing configured from the start; the image installs the current jive.
+- **Belongs in:** jive (`jive create`, `jive provision`), and decomp-project-image's `image/provision.sh` for the
+  installed version.
+
+## HTTPS for T3 Code on the agentic-workspace droplet
+- **By hand:** on 2026-11-19 an agent installed Caddy 2.11.9 (with caddy-dns/acmedns) and acme-dns 2.0.2 on the
+  droplet, wrote `/etc/caddy/Caddyfile`, `/etc/acme-dns/config.cfg` and both units, created the `acme-dns` user,
+  registered the one acme-dns account, and removed T3's `--tailscale-serve` drop-in so Caddy owns tailnet port 443.
+  The files are in `@ozyman42/dns`'s `local/droplet/` (not committed). A rebuild of the droplet wipes all of it except
+  the state on the Volume.
+- **Should be:** the droplet's image installs both binaries, both configs and units and the user, and runs T3 without
+  `--tailscale-serve`; a fresh Volume's acme-dns registration and the CNAME it needs come from a workflow, not by hand.
+- **Belongs in:** decomp-project-image (`image/provision.sh`, `image/t3.service`).
+- **In flight:** [open-empires/decomp-project-image#2](https://github.com/open-empires/decomp-project-image/pull/2)
+  (draft) puts the install in the image; the registration workflow is still missing.

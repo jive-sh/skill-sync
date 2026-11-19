@@ -260,6 +260,9 @@ Each entry: what is done by hand, what should replace it, and where that belongs
   `packages/@ozyman42/dns` with git, set by hand the signing config `jive init` sets, pushed the first commit, and only
   then ran `jive load`, which adopted the checkout. It ran jive 0.9.1 from source (a `git archive` of `b4e0b12`),
   because the droplet's image installs 0.8.0, whose `load` doesn't place packages at `packages/<package name>`.
+  The same happened on 2026-11-19 for `ozyman42/agenticloud-connect`, cloned empty to
+  `packages/@ozyman42/agenticloud-connect` and filled there, its first commit pushed, then adopted by `jive load`
+  run from a `git archive` of jive `b4e0b12`.
 - **Should be:** `jive create` (or `jive provision` with a code-repository kind) makes the repo, its first commit and
   its submodule entry in one step, with signing configured from the start; the image installs the current jive.
 - **Belongs in:** jive (`jive create`, `jive provision`), and decomp-project-image's `image/provision.sh` for the
@@ -274,5 +277,24 @@ Each entry: what is done by hand, what should replace it, and where that belongs
 - **Should be:** the droplet's image installs both binaries, both configs and units and the user, and runs T3 without
   `--tailscale-serve`; a fresh Volume's acme-dns registration and the CNAME it needs come from a workflow, not by hand.
 - **Belongs in:** decomp-project-image (`image/provision.sh`, `image/t3.service`).
-- **In flight:** [open-empires/decomp-project-image#2](https://github.com/open-empires/decomp-project-image/pull/2)
+- **In flight:** [open-empires/decomp-project-image#1](https://github.com/open-empires/decomp-project-image/pull/1)
   (draft) puts the install in the image; the registration workflow is still missing.
+
+## A Cloudflare deploy token for a new Worker repository
+- **By hand:** on 2026-11-19 `@jive-sh/skill-sync-service`'s first pipeline run failed because its repository has no
+  `CLOUDFLARE_API_TOKEN` (the only copy sits on `jive-sh/skill-sync`, which does not deploy). An agent ran
+  `wrangler login --device` on the droplet, Alex approved the sign-in on his own computer, and the agent stored the
+  resulting OAuth access token as the repository secret. That token expires an hour after it is issued.
+- **Should be:** a Cloudflare connector in `@jive-sh/server`, so a Worker's deploy job signs in with `jive login --cicd`
+  and the server deploys or hands it a short-lived token; no Cloudflare token in any repository.
+- **Belongs in:** `@jive-sh/server` (a `jive-resource-*` Cloudflare connector) and `@jive-sh/jive` (`jive provision`).
+
+## Testing a package's daemon install and start
+- **By hand:** on 2026-11-19, for `@ozyman42/agenticloud-connect`, an agent installed the built package globally with
+  `HOME` set to a scratch folder and fake `systemctl` and `loginctl` first on `PATH`, read the record and unit the
+  installer wrote, ran the unit's `ExecStart` with a bare `PATH` against fake `jive` and `jive-ssh`, then removed the
+  package and watched the daemon deregister itself.
+- **Should be:** a CI test in jive-abstract-library that builds a sample package with a daemon, installs it on each OS
+  runner against fake service managers (`systemctl`, `launchctl`, `schtasks`), starts the daemon from its recorded
+  registration, and checks it deregisters after an uninstall.
+- **Belongs in:** jive-abstract-library's tests, run by its pipeline on Linux, macOS and Windows runners.

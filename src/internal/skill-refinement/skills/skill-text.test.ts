@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { makeIntake } from '../feedback/intake';
 
-import { applyEdits, shaOf, SkillFiles, SkillFilesLive, syncedEditOf, type SyncedSkills } from './skill-text';
+import { applyEdits, lineBudgetOf, shaOf, SkillFiles, SkillFilesLive, skillsTextSha, syncedEditOf, type SyncedSkills } from './skill-text';
 
 const root = path.join(import.meta.dir, '../../../../.synctest', `skill-text-${Date.now().toString(36)}`);
 afterAll(() => { fs.rmSync(root, { recursive: true, force: true }); });
@@ -89,4 +89,19 @@ test("a change that leaves a skill over its own stated line cap does not apply",
   expect(Result.isSuccess(applyEdits(capped, [{ find: '- a rule', replace: '- a shorter rule' }]))).toBe(true);
   const over = applyEdits(capped, [{ find: '- a rule', replace: '- a rule\n- another rule' }]);
   expect(Result.isFailure(over) && over.failure).toBe('the skill would have 6 lines, over its own cap of 5');
+});
+
+test("a skill's line budget counts its lines against the cap it states, and a skill stating none has none", () => {
+  expect(lineBudgetOf('a\nb\n- **Cap: 2 lines.**\n')).toEqual({ lines: 3, cap: 2 });
+  expect(lineBudgetOf('a\nb\n')).toBeNull();
+});
+
+test("one hash of the skills' text, which changes with any skill's text and with no other file", () => {
+  const skills = path.join(root, 'hash');
+  for (const s of ['a', 'b']) { fs.mkdirSync(path.join(skills, s), { recursive: true }); fs.writeFileSync(path.join(skills, s, 'SKILL.md'), `# ${s}\n`); }
+  const before = skillsTextSha(skills);
+  fs.writeFileSync(path.join(skills, 'b', 'history.md'), 'not read');
+  expect(skillsTextSha(skills)).toBe(before);
+  fs.appendFileSync(path.join(skills, 'b', 'SKILL.md'), '- a rule\n');
+  expect(skillsTextSha(skills)).not.toBe(before);
 });

@@ -12,7 +12,7 @@ import { Writer, type IWriter } from '../writer/interface';
 import { SkillFilesLive } from '../skills/skill-text';
 import { installedFolder, intakeFolder, platformDatabase, type WorkflowFolders } from '../paths';
 import { makeService } from '../service';
-import { failureReasons, placeBySkill, rank } from './skill-refinement';
+import { draftPrompt, failureReasons, placeBySkill, rank, reviseDraftPrompt, WORKFLOW } from './skill-refinement';
 import { judgeOf } from '../evals/cases';
 
 const root = path.join(import.meta.dir, '../../../../.synctest', `skill-refinement-${Date.now().toString(36)}`);
@@ -241,3 +241,142 @@ test('an action judge that passes an original he objected to, where the original
   expect(writes).toBe(0);
   void service.runtime.dispose();
 }, 60_000);
+
+const WEAK = '- Reply before any tool call. WEAK-RULE';
+/** Draft's prompts this writer saw, by round: the first draft, then the revise round's. */
+const roundPrompts: string[] = [];
+
+/**
+ * A writer whose first draft does not win, and whose revise round wins when `reviseWins`: replies pass only under the
+ * better rule, as the judges in `fakeWriter` and `fakeJev` decide them. With `skillPulledDuringRoundOne`, the first
+ * grade of an A/B reply also edits that skill file, as a pull of another machine's edit would between the rounds.
+ */
+const roundsWriter = (setting: RoundsSetting): IWriter => {
+  let pulled = false;
+  return { *write(input) {
+    if (input.prompt.startsWith('Grade what an agent decided')) {
+      if (setting.skillPulledDuringRoundOne !== null && !pulled && input.prompt.includes('bad: a tool call first')) {
+        pulled = true;
+        fs.appendFileSync(setting.skillPulledDuringRoundOne, '- A rule pulled from another machine.\n');
+      }
+      const good = input.prompt.includes('GOOD');
+      return { spend, text: JSON.stringify({ does_what_he_wanted: good, adds_unasked: !good, keeps_what_he_rejected: false, unstated_guess: false, why: good ? 'fake pass' : 'it quotes his message back, which he did not want' }) };
+    }
+    if (input.prompt.includes('Why none of them won')) {
+      roundPrompts.push(input.prompt);
+      return { spend, text: JSON.stringify({ candidates: [{ summary: 'removes the shared cause', edits: [{ find: RULE, replace: setting.reviseWins ? BETTER : `${RULE} STILL-WEAK` }] }] }) };
+    }
+    if (input.prompt.includes('Return only JSON: {"candidates"')) {
+      roundPrompts.push(input.prompt);
+      return { spend, text: JSON.stringify({
+        candidates: [{ summary: 'rewords the rule', edits: [{ find: RULE, replace: WEAK }] }],
+        history: '## Reply before any tool call\n2026-11-19: "reply first".',
+        example: { name: 'tool-call-before-reply.md', text: '# Tool call before the reply\n' },
+        eval_case: { his_question: 'status?', original_reply: 'ran a tool', his_reaction: 'reply first', state_before: ['a thread runs'], wanted: 'ROUND-ONE-CASE a reply first', went_wrong: 'a tool call first' },
+      }) };
+    }
+    return { spend, text: input.system.includes('BETTER-RULE') ? 'GOOD reply first' : 'bad: a tool call first' };
+  } };
+};
+
+interface RoundsSetting { readonly reviseWins: boolean; readonly skillPulledDuringRoundOne: string | null }
+
+const outcomesOf = (folders: WorkflowFolders): ReadonlyArray<string> => {
+  if (!fs.existsSync(platformDatabase(folders))) return [];
+  const d = new Database(platformDatabase(folders), { readonly: true });
+  try { return (d.query("SELECT why FROM task_notes WHERE kind = 'outcome' ORDER BY id").all() as Array<{ why: string }>).map((r) => r.why); } catch { return []; } finally { d.close(); }
+};
+
+const roundsService = (input: { readonly folders: WorkflowFolders } & RoundsSetting) => makeService(
+  { folders: input.folders, typesafeApiKey: () => 'test', jevModel: 'jev-latest', claudeConfigDir: 'unused', writerModel: 'claude-opus-5-5', opusJudgeGrades: OPUS_GRADES, opusActionJudgeGrades: OPUS_ACTION_GRADES, intakes: [intakeFolder(input.folders)] },
+  Layer.mergeAll(
+    Layer.succeed(Jev, fakeJev),
+    Layer.succeed(Writer, roundsWriter(input)),
+    SkillFilesLive({ root: input.folders.skills, syncedSkills: async () => [{ name: 'agentic-collaboration', files: 9, editedAt: fs.statSync(path.join(input.folders.skills, 'agentic-collaboration', 'SKILL.md')).mtimeMs, editedBy: 'testbox' }] }),
+  ),
+);
+
+test('with no winner, Draft writes again from why each reply failed, on the same case, and only the new candidates are written and judged', async () => {
+  roundPrompts.length = 0;
+  const folders = setUp('second-round');
+  const service = roundsService({ folders, reviseWins: true, skillPulledDuringRoundOne: null });
+  await service.runtime.runPromise(Effect.void);
+  await service.turn();
+  const record = path.join(installedFolder(folders), '2026-11-17T00-00-00-reply-first.json');
+  for (let waited = 0; !fs.existsSync(record) && waited < 60_000; waited += 250) await Bun.sleep(250);
+  expect(fs.existsSync(record)).toBe(true);
+  await Bun.sleep(1500);
+
+  expect(fs.readFileSync(path.join(folders.skills, 'agentic-collaboration', 'SKILL.md'), 'utf8')).toContain(BETTER);
+  // The revise round read the first round's candidate, the judge's reason and the first round's case.
+  expect(roundPrompts).toHaveLength(2);
+  expect(roundPrompts[1]).toContain('rewords the rule');
+  expect(roundPrompts[1]).toContain('it quotes his message back, which he did not want');
+  expect(roundPrompts[1]).toContain('ROUND-ONE-CASE');
+  // The installed case is the one both rounds were measured on.
+  expect(fs.readFileSync(path.join(folders.skills, 'agentic-collaboration', 'evals', 'cases', 'case-03.json'), 'utf8')).toContain('ROUND-ONE-CASE');
+  expect(outcomesOf(folders)[0]).toBe('installed in agentic-collaboration (23 to 24 words), from draft 2');
+
+  const db = new Database(platformDatabase(folders), { readonly: true });
+  const steps = db.query('SELECT step, outcome, requests FROM step_runs WHERE run = (SELECT run FROM step_runs ORDER BY id LIMIT 1) ORDER BY id').all() as Array<{ step: string; outcome: string; requests: number }>;
+  db.close();
+  expect(steps.map((s) => s.step)).toEqual(['Pick', 'Calibrate judge', 'Classify', 'Draft', 'Choose examples', 'A/B', 'Judge', 'Draft', 'A/B', 'Judge', 'Install']);
+  expect(steps.every((s) => s.outcome === 'success')).toBe(true);
+  // Four cases, two samples: the current text and the first candidate in round 1, the new candidate alone in round 2.
+  expect(steps.filter((s) => s.step === 'A/B').map((s) => s.requests)).toEqual([4 * 2 * 2, 4 * 1 * 2]);
+  expect(steps.filter((s) => s.step === 'Judge').map((s) => s.requests)).toEqual([16, 8]);
+  void service.runtime.dispose();
+}, 90_000);
+
+test("when the skill's text changes between rounds, the next round writes and judges the current text's replies again", async () => {
+  roundPrompts.length = 0;
+  const folders = setUp('pulled-between-rounds');
+  const skillFile = path.join(folders.skills, 'agentic-collaboration', 'SKILL.md');
+  const service = roundsService({ folders, reviseWins: true, skillPulledDuringRoundOne: skillFile });
+  await service.runtime.runPromise(Effect.void);
+  await service.turn();
+  const record = path.join(installedFolder(folders), '2026-11-17T00-00-00-reply-first.json');
+  for (let waited = 0; !fs.existsSync(record) && waited < 60_000; waited += 250) await Bun.sleep(250);
+  expect(fs.existsSync(record)).toBe(true);
+  await Bun.sleep(1500);
+  expect(fs.readFileSync(skillFile, 'utf8')).toContain('- A rule pulled from another machine.');
+  const db = new Database(platformDatabase(folders), { readonly: true });
+  const steps = db.query("SELECT step, requests FROM step_runs WHERE run = (SELECT run FROM step_runs ORDER BY id LIMIT 1) AND step IN ('A/B', 'Judge') ORDER BY id").all() as Array<{ step: string; requests: number }>;
+  db.close();
+  // Round 2 writes the current text and its candidate both: the first round's current-text replies were to the older text.
+  expect(steps.map((s) => `${s.step} ${s.requests}`)).toEqual(['A/B 16', 'Judge 16', 'A/B 16', 'Judge 16']);
+  void service.runtime.dispose();
+}, 90_000);
+
+test('an item that ends without an install waits while its inputs stand, and runs again once a skill it drafts on changes', async () => {
+  roundPrompts.length = 0;
+  const folders = setUp('reruns-on-skill-change');
+  const service = roundsService({ folders, reviseWins: false, skillPulledDuringRoundOne: null });
+  await service.runtime.runPromise(Effect.void);
+  await service.turn();
+  for (let waited = 0; outcomesOf(folders).length === 0 && waited < 60_000; waited += 250) await Bun.sleep(250);
+  expect(outcomesOf(folders)[0]).toMatch(/^after 2 drafts, no candidate wins: no candidate passes the item's own case .*it quotes his message back/);
+
+  // Nothing it reads has changed: the next run waits at Pick, and a wake finds nothing to take.
+  service.platform.wakes.wakePicksOf(WORKFLOW, 'test');
+  await Bun.sleep(3000);
+  expect(outcomesOf(folders)).toHaveLength(1);
+
+  // An edit to the skill, as an install or a pull from another machine makes it, and the wake its watcher raises.
+  const skillFile = path.join(folders.skills, 'agentic-collaboration', 'SKILL.md');
+  fs.appendFileSync(skillFile, '- Another rule.\n');
+  service.platform.wakes.wakePicksOf(WORKFLOW, 'skill agentic-collaboration changed');
+  for (let waited = 0; outcomesOf(folders).length < 2 && waited < 60_000; waited += 250) await Bun.sleep(250);
+  expect(outcomesOf(folders)).toHaveLength(2);
+  void service.runtime.dispose();
+}, 150_000);
+
+test("Draft is told the skill's line budget when the skill states a cap, and nothing about one otherwise", () => {
+  const input = { itemText: 'item', section: 's', sectionConfidence: 0.5, kind: 'new', notes: '', examples: [], skill: 'jive' };
+  const capped = `${Array.from({ length: 199 }, (_, i) => `line ${i}`).join('\n')}\n- **Cap: 200 lines.** Compact by re-checking each rule.\n`;
+  expect(draftPrompt({ ...input, skillText: capped })).toContain('The skill has 200 lines and states its own cap of 200, so it has no room for a line more.');
+  expect(draftPrompt({ ...input, skillText: '## A\n- rule\n' })).not.toContain('cap of');
+  const revised = reviseDraftPrompt({ ...input, skillText: capped, evalCase: { his_question: 'q', original_reply: 'r', his_reaction: 'x', state_before: [], wanted: 'w', went_wrong: 'g' }, tried: [{ summary: 'one', why: 'the skill would have 203 lines, over its own cap of 200' }], whyNoneWon: 'none applied' });
+  expect(revised).toContain('over its own cap of 200');
+  expect(revised).toContain('cap of 200, so it has no room');
+});

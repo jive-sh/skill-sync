@@ -58,6 +58,12 @@ export const sectionsOf = (skill: string, text: string): ReadonlyArray<SkillSect
   return out.map((s) => ({ skill, label: s.label, text: s.lines.join('\n').trim() })).filter((s) => s.text.length > 0);
 };
 
+/** A skill's length against the cap it states for itself ("**Cap: 200 lines.**"); none for a skill that states none. Pure. */
+export const lineBudgetOf = (text: string): { readonly lines: number; readonly cap: number } | null => {
+  const cap = /\*\*Cap: (\d+) lines\.\*\*/.exec(text);
+  return cap === null ? null : { lines: text.split('\n').length - (text.endsWith('\n') ? 1 : 0), cap: Number(cap[1]) };
+};
+
 /** Applies each edit to `text`, refusing one whose `find` is missing or occurs more than once, or a result over the skill's own stated cap. Pure. */
 export const applyEdits = (text: string, edits: ReadonlyArray<SkillEdit>): Result.Result<string, string> => {
   let out = text;
@@ -67,12 +73,20 @@ export const applyEdits = (text: string, edits: ReadonlyArray<SkillEdit>): Resul
     if (out.indexOf(e.find, first + 1) >= 0) return Result.fail(`edit ${i + 1}'s text to replace occurs more than once: ${e.find.slice(0, 120)}`);
     out = out.slice(0, first) + e.replace + out.slice(first + e.find.length);
   }
-  // A skill that states its own length cap ("**Cap: 200 lines.**") is held to it: a change that leaves it longer does not apply.
-  const cap = /\*\*Cap: (\d+) lines\.\*\*/.exec(out);
-  const lines = out.split('\n').length - (out.endsWith('\n') ? 1 : 0);
-  if (cap !== null && lines > Number(cap[1])) return Result.fail(`the skill would have ${lines} lines, over its own cap of ${cap[1]}`);
+  const budget = lineBudgetOf(out);
+  if (budget !== null && budget.lines > budget.cap) return Result.fail(`the skill would have ${budget.lines} lines, over its own cap of ${budget.cap}`);
   return Result.succeed(out);
 };
+
+/**
+ * One hash of every synced skill's text: what Classify and Draft read, so an item parked on its last outcome runs again
+ * once a skill it may draft on has changed (an install, or another machine's edit pulled).
+ */
+export const skillsTextSha = (root: string): string => shaOf(fs.readdirSync(root)
+  .filter((d) => !d.startsWith('.') && fs.existsSync(path.join(root, d, 'SKILL.md')))
+  .sort()
+  .map((d) => `${d}\n${fs.readFileSync(path.join(root, d, 'SKILL.md'), 'utf8')}`)
+  .join('\n'));
 
 export interface ISkillFiles {
   /** Every synced skill's sections. */

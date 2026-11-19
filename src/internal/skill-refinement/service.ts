@@ -27,10 +27,10 @@ import { engineDatabase, installedFolder, intakeFolder, locateSkillCopy, machine
 import OPUS_JUDGE_ORIGINAL from './evals/opus-judge-original.json';
 import OPUS_ACTION_JUDGE_ORIGINAL from './evals/opus-action-judge-original.json';
 import { skillRefinementPlatform } from './platform';
-import { SkillFiles, SkillFilesLive, type SyncedSkills } from './skills/skill-text';
+import { SkillFiles, SkillFilesLive, skillsTextSha, type SyncedSkills } from './skills/skill-text';
 import type { Jev } from './jev/interface';
 import type { Writer } from './writer/interface';
-import { defineSkillRefinement, WORKFLOW } from './workflow/skill-refinement';
+import { defineSkillRefinement, draftVersion, WORKFLOW } from './workflow/skill-refinement';
 import { WriterLive } from './writer/impl';
 import type { LimitChange, RefinementPageData } from '../wire';
 
@@ -79,8 +79,13 @@ export const makeService = (config: ServiceConfig, modules: Layer.Layer<Jev | Wr
   ensureLimits(folders);
   const platform = skillRefinementPlatform(folders);
   const intake = makeIntake({ intake: intakeFolder(folders), intakes: config.intakes, installed: installedFolder(folders) });
-  // A key put in place changes every task's inputs, so the items its absence stopped are queued again.
-  const configFingerprint = () => JSON.stringify({ judge: judgeVersion(), jev: config.jevModel, jevKeySet: config.typesafeApiKey().length > 0, writer: config.writerModel, account: config.claudeConfigDir });
+  // Everything a run reads beyond the item: an item that ended without an install runs again once any of it changes.
+  // A key put in place queues the items its absence stopped; a change to Draft or the judge queues every item that
+  // ended under the old one; an edit to a skill (an install, another machine's edit pulled) queues those that would draft on it.
+  const configFingerprint = () => JSON.stringify({
+    judge: judgeVersion(), draft: draftVersion(), skills: skillsTextSha(folders.skills),
+    jev: config.jevModel, jevKeySet: config.typesafeApiKey().length > 0, writer: config.writerModel, account: config.claudeConfigDir,
+  });
   const maintenance = defineSkillRefinement({ platform, intake, folders, opusJudgeGrades: config.opusJudgeGrades, opusActionJudgeGrades: config.opusActionJudgeGrades, configFingerprint });
   const layer = pipe(
     maintenance.layer as Layer.Layer<never>,
@@ -230,6 +235,10 @@ export const startSkillRefinement = async (input: {
   for (const folder of config.intakes) fs.watch(folder, () => service.kick());
   // The key's arrival changes every task's inputs (`configFingerprint`), which no note or listing announces: the waiting Pick is woken to read them.
   fs.watch(copy.skillFolder, (_, file) => { if (file === path.basename(copy.jevKeyFile)) service.platform.wakes.wakePicksOf(WORKFLOW, 'the Jev key was set'); });
+  // Likewise a skill's text (`configFingerprint`): one pulled from another machine arrives with no run or item to wake the Pick.
+  for (const skill of fs.readdirSync(copy.folders.skills).filter((d) => fs.existsSync(path.join(copy.folders.skills, d, 'SKILL.md')))) {
+    fs.watch(path.join(copy.folders.skills, skill), (_, file) => { if (file === 'SKILL.md') service.platform.wakes.wakePicksOf(WORKFLOW, `skill ${skill} changed`); });
+  }
   setInterval(service.kick, KEEP_RUNNING_EVERY_SECONDS * 1000);
   service.kick();
 

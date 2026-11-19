@@ -5,8 +5,9 @@
  *   Calibrate judge   Jev, the judge of reply cases, grades the original replies Alex objected to (and the one he called
  *                     good) once per judge version; agreeing with him less often than the Opus judge did ends the run here.
  *   Classify          Jev names the skill section the item is about, and whether it is new, a repeat or a correction.
- *   Draft             the generative model reads only that skill, its example names, its rules for changing skills and
- *                     the item, and writes candidate edits, the item's example and its A/B case.
+ *   Draft             the generative model reads only that skill (with its line budget, where it states a cap), its
+ *                     example names, its rules for changing skills and the item, and writes candidate edits, the item's
+ *                     example and its A/B case.
  *   Choose examples   Jev names the section that owns each A/B case's failure; the changed section's cases, and the
  *                     item's own, are tested.
  *   A/B               for each chosen case, the generative model writes the reply under the current text and under
@@ -15,6 +16,13 @@
  *                     candidates are ranked by their passes.
  *   Install           the best candidate that fails no case the current text passes is written to the synced skill,
  *                     then skill-sync's synced list must show the skill edited after the install.
+ *
+ * With no winner (or no candidate that applies), Draft writes new candidates once more in the same run, reading why each
+ * reply failed, against the same case; the current text's replies and verdicts are reused, so only the new candidates
+ * are written and judged. Run on 23 past runs (2026-11-19), every run with no winner failed the item's own case under
+ * the current text and both candidates alike, most often for a part another rule of the skill requires (a quote of his
+ * message, a Blocked on you line), which a change to the one rule the item names cannot fix: those reasons reached Draft
+ * only as a note for a next run, and an item whose inputs are unchanged gets none.
  *
  * The content rules (what a good change is) live in the `autonomous-skill-refinement` skill around this code; Draft
  * reads them from it each run. Jev classifies and judges; only Draft and A/B, which must write text, call a generative model.
@@ -25,7 +33,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Jev } from '../jev/interface';
 import { Writer, type WriterSpend } from '../writer/interface';
-import { applyEdits, shaOf, SkillFiles, type SkillSection } from '../skills/skill-text';
+import { applyEdits, lineBudgetOf, shaOf, SkillFiles, type SkillSection } from '../skills/skill-text';
 import { actionJudgePrompt, actionPasses, ActionVerdict, caseSummary, EvalCase, judgeOf, judgeQuestions, judgeState, judgeVersion, nextCaseFile, readCases, REPLY_CRITERIA, verdictOf, writerPrompt, writerSystem } from '../evals/cases';
 import type { Intake } from '../feedback/intake';
 import { evalCasesFolder, runFolder, type WorkflowFolders } from '../paths';
@@ -37,6 +45,8 @@ export const OWNING_SKILL = 'autonomous-skill-refinement';
 export const SAMPLES = 2;
 /** Candidate edits drafted per item. */
 export const CANDIDATES = 2;
+/** Draft's tries per run: the first, and one more that reads why the first one's replies failed. */
+export const DRAFT_ROUNDS = 2;
 /** Writer calls at once. */
 const WRITERS_AT_ONCE = 4;
 
@@ -83,6 +93,8 @@ const DraftReply = Schema.Struct({
   eval_case: Schema.Struct({ his_question: Schema.String, original_reply: Schema.String, his_reaction: Schema.String, state_before: Schema.Array(Schema.String), wanted: Schema.String, went_wrong: Schema.String }),
 });
 type DraftReply = typeof DraftReply.Type;
+/** What a later round of Draft writes: new candidates for the same case. */
+const RevisedCandidates = Schema.Struct({ candidates: DraftReply.fields.candidates });
 
 const jsonIn = (text: string): string => text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
 const writeJson = (file: string, value: unknown) => Effect.sync(() => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value, null, 1)); });
@@ -114,6 +126,90 @@ export const placeBySkill = (input: { readonly probabilities: Readonly<Record<st
   const [section, sectionProbability] = Object.entries(input.probabilities).filter(([label]) => skillOf.get(label) === skill).sort((a, b) => b[1] - a[1])[0]!;
   return { skill, skillProbability, section, sectionProbability };
 };
+
+/**
+ * The skill's line budget, for a skill that states a cap: told to Draft before it writes, since a candidate over the cap
+ * is refused after it (every jive item ended "no candidate applies: the skill would have 218 lines, over its own cap of
+ * 200", the skill already at 201). Pure.
+ */
+const lineBudgetLine = (text: string): string => {
+  const budget = lineBudgetOf(text);
+  if (budget === null) return '';
+  return `The skill has ${budget.lines} lines and states its own cap of ${budget.cap}${budget.lines >= budget.cap ? ', so it has no room for a line more' : ''}. A candidate that leaves it over ${budget.cap} lines is refused: one that would go over compacts the skill in the same edits, the way the skill's own rule for its length says.`;
+};
+
+/** What Draft writes candidates from: the item, where Jev placed it, and the skill it changes. */
+export interface DraftInput {
+  readonly itemText: string;
+  readonly section: string;
+  readonly sectionConfidence: number;
+  readonly kind: string;
+  /** Earlier runs' outcomes on this item, as the platform keeps them for the next agent; empty for none. */
+  readonly notes: string;
+  readonly examples: ReadonlyArray<string>;
+  readonly skill: string;
+  readonly skillText: string;
+}
+
+/** Draft's system prompt: the rules for changing skills, from the skill that owns them. Pure. */
+export const draftSystem = (howToChange: string): string =>
+  `You maintain Alex's skills: the rules every agent working for him loads. You change one skill's text for one piece of his feedback. These are the rules for changing skills, from the skill that owns them (${OWNING_SKILL}):\n\n${howToChange}`;
+
+const draftContext = (input: DraftInput): ReadonlyArray<string> => [
+  `The feedback item, as the agent that received it handed it over:\n${input.itemText}`,
+  `Jev classified it as about "${input.section}" (confidence ${input.sectionConfidence.toFixed(2)}), kind: ${input.kind}.`,
+  input.notes.length > 0 ? `Earlier tries on this item, and why they ended:\n${input.notes}` : '',
+  `The skill's example files, by name: ${input.examples.join(', ')}`,
+  `The skill ${input.skill}'s whole text now:\n<<<SKILL\n${input.skillText}\nSKILL>>>`,
+  lineBudgetLine(input.skillText),
+];
+
+const CANDIDATE_JSON = '{"summary": "the rule change in one sentence", "edits": [{"find": "...", "replace": "..."}]}';
+const EDITS_ASKED = 'each a list of exact replacements in that text: "find" must be copied exactly from the text and occur once.';
+
+/** Draft's first prompt for an item: candidates, the history entry, the example and the item's A/B case. Pure. */
+export const draftPrompt = (input: DraftInput): string => [
+  ...draftContext(input),
+  `Write ${CANDIDATES} different candidate changes, ${EDITS_ASKED}`
+    + ' Also write the history entry for history.md (a "## " heading naming the rule, then his words, the date and what drew them), the example file (name and text: what happened, his words, why), and the A/B case for this instance as an action case.',
+  `Return only JSON: {"candidates": [${CANDIDATE_JSON}], "history": "...", "example": {"name": "topic-words.md", "text": "..."}, "eval_case": {"his_question": "his message that the agent acted on", "original_reply": "what the agent did and said", "his_reaction": "his exact words", "state_before": ["fact"], "wanted": "...", "went_wrong": "..."}}`,
+].filter(Boolean).join('\n\n');
+
+/**
+ * Draft's next prompt in a run whose candidates did not win: the same item and case, the candidates tried, and why each
+ * reply failed, for new candidates only; the case stays as the first round wrote it, so a candidate is never measured
+ * against an easier one. Pure.
+ */
+export const reviseDraftPrompt = (input: DraftInput & {
+  readonly evalCase: DraftReply['eval_case'];
+  readonly tried: ReadonlyArray<{ readonly summary: string; readonly why: string }>;
+  readonly whyNoneWon: string;
+}): string => [
+  ...draftContext(input),
+  `The A/B case every candidate is tested on, which a winner must pass:\n${JSON.stringify(input.evalCase, null, 1)}`,
+  `The candidates already tried for this item:\n${input.tried.map((t, i) => `${i + 1}. ${t.summary} (${t.why})`).join('\n')}`,
+  `Why none of them won: ${input.whyNoneWon}`,
+  'Each failure above is a judge\'s reason for one reply written under one version of the skill: the current text or a candidate. A failure every version shares comes from text they all keep, which can be a rule other than the one the feedback names.'
+    + ` Find the rules in the skill text that produce the failures, and write ${CANDIDATES} new candidate changes that remove them, ${EDITS_ASKED}`
+    + ' A candidate never drops or weakens a requirement he stated (the rules for changing skills); where passing the case would need that, its summary names the rule and his words that stand in the way.',
+  `Return only JSON: {"candidates": [${CANDIDATE_JSON}]}`,
+].filter(Boolean).join('\n\n');
+
+/**
+ * Draft's version: its prompts on fixed inputs, and the counts a run tests with. With the judge's version and the skills'
+ * text it decides when an item that ended without an install runs again (`configFingerprint`). Pure.
+ */
+export const draftVersion = (): string => {
+  const fixed: DraftInput = { itemText: '', section: '', sectionConfidence: 0, kind: '', notes: '', examples: [], skill: '', skillText: '' };
+  return JSON.stringify({
+    system: draftSystem(''), first: draftPrompt(fixed),
+    revise: reviseDraftPrompt({ ...fixed, evalCase: { his_question: '', original_reply: '', his_reaction: '', state_before: [], wanted: '', went_wrong: '' }, tried: [], whyNoneWon: '' }),
+    CANDIDATES, SAMPLES, DRAFT_ROUNDS,
+  });
+};
+
+/** A round's file in the run folder: the first round's keeps its plain name. Pure. */
+const roundFile = (name: string, round: number): string => (round === 1 ? `${name}.json` : `${name}-${round}.json`);
 
 /** What calibration measured, in a line: each judge against its baseline. Pure. */
 const calibrationLine = (c: typeof Calibration.Type) => `Jev agrees with Alex on ${c.agreed} of ${c.graded} original replies (Opus judge: ${c.opusAgreed} of ${c.opusGraded}); the action judge fails ${c.actionAgreed} of ${c.actionGraded} action originals he objected to (original prompt: ${c.actionBaselineAgreed} of ${c.actionBaselineGraded})`;
@@ -157,29 +253,37 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
     return { skill: section.skill, section: section.label, sectionConfidence: placed.sectionProbability, kind: kind.answers.kind.choice, kindConfidence: kind.answers.kind.confidence, jevModel: kind.model };
   });
 
-  const draft = (input: { readonly item: string; readonly run: string; readonly classified: typeof Classified.Type }) => Effect.gen(function* () {
+  /**
+   * Draft for one round. The first writes the candidates, history entry, example and case; a later one, given the round
+   * before it, writes new candidates only, keeping that round's history, example and case.
+   */
+  const draft = (input: {
+    readonly item: string; readonly run: string; readonly classified: typeof Classified.Type; readonly round: number;
+    readonly previous: { readonly drafted: typeof Drafted.Type; readonly whyNoneWon: string } | null;
+  }) => Effect.gen(function* () {
     const files = yield* SkillFiles;
     const writer = yield* Writer;
     const target = yield* files.skillText(input.classified.skill);
     const howToChange = (yield* files.skillText(OWNING_SKILL)).text;
-    const examples = yield* files.exampleNames(input.classified.skill);
-    const notes = yield* Effect.orElseSucceed(deps.platform.tasks.notesForAgent({ workflow: WORKFLOW, item: input.item }), () => '');
+    const context: DraftInput = {
+      itemText: yield* deps.intake.text(input.item),
+      section: input.classified.section, sectionConfidence: input.classified.sectionConfidence, kind: input.classified.kind,
+      notes: yield* Effect.orElseSucceed(deps.platform.tasks.notesForAgent({ workflow: WORKFLOW, item: input.item }), () => ''),
+      examples: yield* files.exampleNames(input.classified.skill),
+      skill: input.classified.skill, skillText: target.text,
+    };
+    const earlier = input.previous === null ? null : { ...input.previous, reply: yield* readJson<DraftReply>(input.previous.drafted.file) };
     const written = yield* writer.write({
-      system: `You maintain Alex's skills: the rules every agent working for him loads. You change one skill's text for one piece of his feedback. These are the rules for changing skills, from the skill that owns them (${OWNING_SKILL}):\n\n${howToChange}`,
-      prompt: [
-        `The feedback item, as the agent that received it handed it over:\n${yield* deps.intake.text(input.item)}`,
-        `Jev classified it as about "${input.classified.section}" (confidence ${input.classified.sectionConfidence.toFixed(2)}), kind: ${input.classified.kind}.`,
-        notes.length > 0 ? `Earlier tries on this item, and why they ended:\n${notes}` : '',
-        `The skill's example files, by name: ${examples.join(', ')}`,
-        `The skill ${input.classified.skill}'s whole text now:\n<<<SKILL\n${target.text}\nSKILL>>>`,
-        `Write ${CANDIDATES} different candidate changes, each a list of exact replacements in that text: "find" must be copied exactly from the text and occur once.`
-          + ' Also write the history entry for history.md (a "## " heading naming the rule, then his words, the date and what drew them), the example file (name and text: what happened, his words, why), and the A/B case for this instance as an action case.',
-        'Return only JSON: {"candidates": [{"summary": "the rule change in one sentence", "edits": [{"find": "...", "replace": "..."}]}], "history": "...", "example": {"name": "topic-words.md", "text": "..."}, "eval_case": {"his_question": "his message that the agent acted on", "original_reply": "what the agent did and said", "his_reaction": "his exact words", "state_before": ["fact"], "wanted": "...", "went_wrong": "..."}}',
-      ].filter(Boolean).join('\n\n'),
+      system: draftSystem(howToChange),
+      prompt: earlier === null
+        ? draftPrompt(context)
+        : reviseDraftPrompt({ ...context, evalCase: earlier.reply.eval_case, tried: earlier.drafted.candidates, whyNoneWon: earlier.whyNoneWon }),
     });
-    yield* recordWriterSpend('draft', written.spend);
-    const reply = yield* Effect.mapError(Schema.decodeUnknownEffect(Schema.fromJsonString(DraftReply))(jsonIn(written.text)), (e) => `the draft was not the JSON asked for: ${e.message}`);
-    const file = path.join(runFolder(deps.folders, input.run), 'draft.json');
+    yield* recordWriterSpend(input.round === 1 ? 'draft' : `draft ${input.round}`, written.spend);
+    const reply: DraftReply = earlier === null
+      ? yield* Effect.mapError(Schema.decodeUnknownEffect(Schema.fromJsonString(DraftReply))(jsonIn(written.text)), (e) => `the draft was not the JSON asked for: ${e.message}`)
+      : { ...earlier.reply, candidates: (yield* Effect.mapError(Schema.decodeUnknownEffect(Schema.fromJsonString(RevisedCandidates))(jsonIn(written.text)), (e) => `round ${input.round}'s draft was not the JSON asked for: ${e.message}`)).candidates };
+    const file = path.join(runFolder(deps.folders, input.run), roundFile('draft', input.round));
     yield* writeJson(file, { ...reply, skill: input.classified.skill, draftedOn: target.sha, raw: written.text });
     return {
       skill: input.classified.skill, draftedOn: target.sha, file, costUsd: written.spend.costUsd,
@@ -275,20 +379,24 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
     return input.cases.flatMap((c) => versions.flatMap((text, version) => Array.from({ length: SAMPLES }, (_, sample) => ({ c, version, text, sample }))));
   };
 
-  const ab = (input: { readonly run: string; readonly drafted: typeof Drafted.Type; readonly chosen: typeof Chosen.Type; readonly item: string }) => Effect.gen(function* () {
+  type WrittenReply = { readonly case: typeof EvalCase.Type; readonly version: number; readonly sample: number; readonly reply: string; readonly costUsd: number };
+
+  /** A/B for one round; given an earlier round's replies, the current text's are taken from them, not written again. */
+  const ab = (input: { readonly run: string; readonly drafted: typeof Drafted.Type; readonly chosen: typeof Chosen.Type; readonly item: string; readonly round: number; readonly currentTextReplies: string | null }) => Effect.gen(function* () {
     const writer = yield* Writer;
     const reply = yield* readJson<DraftReply>(input.drafted.file);
     const current = (yield* (yield* SkillFiles).skillText(input.drafted.skill)).text;
     const all = yield* readCases(evalCasesFolder(deps.folders));
     const cases = [...all.filter((c) => input.chosen.cases.includes(c.id)), itemCase(reply, `this item (${input.item})`)];
-    const jobs = abJobs({ reply, current, cases });
+    const reused = input.currentTextReplies === null ? [] : (yield* readJson<ReadonlyArray<WrittenReply>>(input.currentTextReplies)).filter((w) => w.version === 0);
+    const jobs = abJobs({ reply, current, cases }).filter((j) => reused.length === 0 || j.version !== 0);
     const written = yield* Effect.forEach(jobs, (j) => Effect.gen(function* () {
       const w = yield* writer.write({ system: writerSystem(input.drafted.skill, j.text), prompt: writerPrompt(j.c) });
-      yield* recordWriterSpend(`${j.c.id} v${j.version} s${j.sample}`, w.spend);
+      yield* recordWriterSpend(`${input.round === 1 ? '' : `round ${input.round} `}${j.c.id} v${j.version} s${j.sample}`, w.spend);
       return { case: j.c, version: j.version, sample: j.sample, reply: w.text, costUsd: w.spend.costUsd };
     }), { concurrency: WRITERS_AT_ONCE });
-    const file = path.join(runFolder(deps.folders, input.run), 'replies.json');
-    yield* writeJson(file, written);
+    const file = path.join(runFolder(deps.folders, input.run), roundFile('replies', input.round));
+    yield* writeJson(file, [...reused, ...written]);
     return { file, replies: written.length, costUsd: written.reduce((s, w) => s + w.costUsd, 0) };
   });
 
@@ -296,11 +404,13 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
    * Ranks the versions by passes. A candidate wins only if it fails no case the current text passes (a case passes for a
    * version when most of its samples pass) and passes the item's own case; of those, the most passes wins.
    */
-  const judge = (input: { readonly run: string; readonly replies: typeof Replies.Type }) => Effect.gen(function* () {
+  const judge = (input: { readonly run: string; readonly replies: typeof Replies.Type; readonly round: number; readonly currentTextVerdicts: string | null }) => Effect.gen(function* () {
     const jev = yield* Jev;
-    const written = yield* readJson<ReadonlyArray<{ readonly case: typeof EvalCase.Type; readonly version: number; readonly sample: number; readonly reply: string }>>(input.replies.file);
-    const judged = yield* Effect.forEach(written, (w) => Effect.gen(function* () {
-      const id = `judge ${w.case.id} v${w.version} s${w.sample}`;
+    const written = yield* readJson<ReadonlyArray<WrittenReply>>(input.replies.file);
+    // An earlier round's verdicts on the current text's replies stand: those replies are the same ones.
+    const reused = input.currentTextVerdicts === null ? [] : (yield* readJson<{ readonly judged: ReadonlyArray<Judged> }>(input.currentTextVerdicts)).judged.filter((j) => j.version === 0);
+    const fresh = yield* Effect.forEach(written.filter((w) => reused.length === 0 || w.version !== 0), (w) => Effect.gen(function* () {
+      const id = `judge ${input.round === 1 ? '' : `round ${input.round} `}${w.case.id} v${w.version} s${w.sample}`;
       // Each case goes to its kind's judge (`judgeOf`): an action case to the Opus judge, a reply case to Jev.
       if (judgeOf(w.case) === 'opus') {
         const verdict = yield* opusGrade({ id, c: w.case, reply: w.reply });
@@ -310,8 +420,9 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
       yield* recordJevSpend(id, a.model, a.inputTokens, a.outputTokens);
       return { caseId: w.case.id, version: w.version, sample: w.sample, judge: 'jev' as const, answers: a.answers, ...verdictOf(a.answers as Record<string, number>) };
     }), { concurrency: WRITERS_AT_ONCE });
+    const judged = [...reused, ...fresh];
     const ranked = rank(judged);
-    const file = path.join(runFolder(deps.folders, input.run), 'judged.json');
+    const file = path.join(runFolder(deps.folders, input.run), roundFile('judged', input.round));
     yield* writeJson(file, { judged, ranked });
     // The outcome note the next Draft of this item reads: with no winner, why each failing reply failed, so it can aim there.
     const failures = failureReasons(judged);
@@ -355,12 +466,15 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
       { from: CALIBRATE.name, to: RUN_ENDS, when: 'the judge agrees with him less often: no model call is spent on the item' },
       { from: PICK.name, to: RUN_ENDS, when: 'the run is past its run limit' },
       { from: CLASSIFY.name, to: DRAFT.name, when: 'always' },
-      { from: DRAFT.name, to: CHOOSE.name, when: 'a candidate applies' },
-      { from: DRAFT.name, to: RUN_ENDS, when: 'no candidate applies' },
+      { from: DRAFT.name, to: CHOOSE.name, when: 'a candidate applies, in the first round that has one' },
+      { from: DRAFT.name, to: AB.name, when: 'a candidate applies, once the examples are chosen' },
+      { from: DRAFT.name, to: DRAFT.name, when: 'no candidate applies, and a round is left: the next reads why' },
+      { from: DRAFT.name, to: RUN_ENDS, when: 'no candidate applies in the last round' },
       { from: CHOOSE.name, to: AB.name, when: 'always' },
       { from: AB.name, to: JUDGE.name, when: 'always' },
       { from: JUDGE.name, to: INSTALL.name, when: 'a candidate wins' },
-      { from: JUDGE.name, to: RUN_ENDS, when: 'no candidate wins' },
+      { from: JUDGE.name, to: DRAFT.name, when: 'no candidate wins, and a round is left: the next reads why each reply failed' },
+      { from: JUDGE.name, to: RUN_ENDS, when: 'no candidate wins in the last round' },
       { from: INSTALL.name, to: RUN_ENDS, when: 'always' },
       { from: A_STEP_FAILS, to: RUN_ENDS, when: 'a step fails' },
     ],
@@ -380,19 +494,44 @@ export const defineSkillRefinement = (deps: SkillRefinementDeps) => {
     const calibration = yield* CALIBRATE.run(calibrate());
     if (!calibration.usable) return { item, outcome: `the judge is not calibrated: ${calibrationLine(calibration)}`, finished: false };
     const classified = yield* CLASSIFY.run(classify(item));
-    const drafted = yield* DRAFT.run(draft({ item, run, classified }));
-    if (!drafted.candidates.some((c) => c.applies)) return { item, outcome: `no candidate applies: ${drafted.candidates.map((c) => c.why).join('; ')}`, finished: false };
-    const chosen = yield* CHOOSE.run(choose(classified));
-    const replies = yield* AB.run(ab({ run, drafted, chosen, item }));
-    const ranked = yield* JUDGE.run(judge({ run, replies }));
-    if (ranked.winner === null) return { item, outcome: `no candidate wins: ${ranked.why}`, finished: false };
-    const installed = yield* INSTALL.run(install({ item, run, drafted, winner: ranked.winner }));
-    return { item, outcome: `installed in ${installed.skill} (${installed.wordsBefore} to ${installed.wordsAfter} words)`, finished: true };
+    let chosen: typeof Chosen.Type | null = null;
+    let previous: { readonly drafted: typeof Drafted.Type; readonly whyNoneWon: string } | null = null;
+    // The current text's replies and verdicts, once a round has written them: a later round drafted on the same text compares against these.
+    let currentText: { readonly sha: string; readonly replies: string; readonly verdicts: string } | null = null;
+    let outcome = '';
+    for (let round = 1; round <= DRAFT_ROUNDS; round++) {
+      // The first round's steps keep their plain names, so a run started before rounds existed resumes from its records.
+      const call = round === 1 ? undefined : { call: round };
+      const drafted: typeof Drafted.Type = yield* DRAFT.run(draft({ item, run, classified, round, previous }), call);
+      if (!drafted.candidates.some((c) => c.applies)) {
+        const why = drafted.candidates.map((c) => c.why).join('; ');
+        outcome = `no candidate applies: ${why}`;
+        previous = { drafted, whyNoneWon: `none applied: ${why}` };
+        continue;
+      }
+      chosen = chosen ?? (yield* CHOOSE.run(choose(classified)));
+      // Replies to a text that has changed since (another machine's edit pulled between rounds) are not this text's: written again.
+      const reuse = currentText !== null && currentText.sha === drafted.draftedOn ? currentText : null;
+      const replies: typeof Replies.Type = yield* AB.run(ab({ run, drafted, chosen, item, round, currentTextReplies: reuse === null ? null : reuse.replies }), call);
+      const ranked: typeof Ranked.Type = yield* JUDGE.run(judge({ run, replies, round, currentTextVerdicts: reuse === null ? null : reuse.verdicts }), call);
+      if (ranked.winner !== null) {
+        const installed = yield* INSTALL.run(install({ item, run, drafted, winner: ranked.winner }));
+        return { item, outcome: `installed in ${installed.skill} (${installed.wordsBefore} to ${installed.wordsAfter} words)${round === 1 ? '' : `, from draft ${round}`}`, finished: true };
+      }
+      outcome = `no candidate wins: ${ranked.why}`;
+      previous = { drafted, whyNoneWon: ranked.why };
+      currentText = { sha: drafted.draftedOn, replies: replies.file, verdicts: ranked.file };
+    }
+    return { item, outcome: `after ${DRAFT_ROUNDS} drafts, ${outcome}`, finished: false };
   }));
 
   return { workflow, layer, steps: { PICK, CLASSIFY, DRAFT, CHOOSE, CALIBRATE, AB, JUDGE, INSTALL } };
 };
 
+
+/** One reply's verdict, by its case kind's judge, as `judged.json` keeps it. */
+type Judged = { readonly caseId: string; readonly version: number; readonly sample: number; readonly pass: boolean; readonly score: number }
+  & ({ readonly judge: 'opus'; readonly verdict: ActionVerdict } | { readonly judge: 'jev'; readonly answers: unknown });
 
 /** Why each failing reply failed: the Opus judge's sentence, or the reply criteria Jev failed it on. Pure. */
 export const failureReasons = (judged: ReadonlyArray<
